@@ -3,9 +3,22 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use rayon::prelude::*;
+
 use crate::scoring::{self, Method, ScoringParams};
 use crate::storage::MmapData;
 use crate::tokenizer::{Tokenizer, TokenizerMode};
+
+/// Cap rayon parallelism at 12 threads max.
+fn capped_pool() -> rayon::ThreadPool {
+    let n = std::thread::available_parallelism()
+        .map(|p| p.get().min(12))
+        .unwrap_or(4);
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n)
+        .build()
+        .expect("failed to build rayon pool")
+}
 
 /// A scored document result.
 #[derive(Debug, Clone)]
@@ -152,19 +165,29 @@ impl BM25 {
             self.materialize_mmap();
         }
 
+        // Phase 1: tokenize + compute TF maps in parallel
+        let pool = capped_pool();
+        let tokenized: Vec<(u32, HashMap<String, u32>)> = pool.install(|| {
+            documents
+                .par_iter()
+                .map(|doc| {
+                    let tokens = self.tokenizer.tokenize_owned(doc);
+                    let doc_len = tokens.len() as u32;
+                    let mut tf_map: HashMap<String, u32> = HashMap::new();
+                    for token in tokens {
+                        *tf_map.entry(token).or_insert(0) += 1;
+                    }
+                    (doc_len, tf_map)
+                })
+                .collect()
+        });
+
+        // Phase 2: merge into index sequentially (cheap — just HashMap lookups + Vec pushes)
+        let base_id = self.num_docs;
         let mut ids = Vec::with_capacity(documents.len());
 
-        for doc in documents {
-            let doc_id = self.num_docs;
-            self.num_docs += 1;
-
-            let tokens = self.tokenizer.tokenize_owned(doc);
-            let doc_len = tokens.len() as u32;
-
-            let mut tf_map: HashMap<String, u32> = HashMap::new();
-            for token in &tokens {
-                *tf_map.entry(token.clone()).or_insert(0) += 1;
-            }
+        for (i, (doc_len, tf_map)) in tokenized.into_iter().enumerate() {
+            let doc_id = base_id + i as u32;
 
             for (token, tf) in tf_map {
                 let term_id = self.get_or_create_term(&token);
@@ -174,10 +197,10 @@ impl BM25 {
 
             self.doc_lengths.push(doc_len);
             self.total_tokens += doc_len as u64;
-
             ids.push(doc_id as usize);
         }
 
+        self.num_docs = base_id + documents.len() as u32;
         self.auto_save()?;
         Ok(ids)
     }
@@ -464,20 +487,30 @@ impl BM25 {
             return Vec::new();
         }
 
-        // Tokenize documents, compute TFs and doc lengths
+        // Tokenize documents in parallel, compute TFs and doc lengths
+        let pool = capped_pool();
+        let tokenized: Vec<(u32, HashMap<String, u32>)> = pool.install(|| {
+            documents
+                .par_iter()
+                .map(|doc| {
+                    let tokens = self.tokenizer.tokenize_owned(doc);
+                    let dl = tokens.len() as u32;
+                    let mut tf_map: HashMap<String, u32> = HashMap::new();
+                    for t in tokens {
+                        *tf_map.entry(t).or_insert(0) += 1;
+                    }
+                    (dl, tf_map)
+                })
+                .collect()
+        });
+
         let mut doc_tokens: Vec<HashMap<String, u32>> = Vec::with_capacity(n);
         let mut doc_lens: Vec<u32> = Vec::with_capacity(n);
         let mut total_tokens = 0u64;
-        for doc in documents {
-            let tokens = self.tokenizer.tokenize_owned(doc);
-            let dl = tokens.len() as u32;
-            let mut tf_map: HashMap<String, u32> = HashMap::new();
-            for t in tokens {
-                *tf_map.entry(t).or_insert(0) += 1;
-            }
-            doc_tokens.push(tf_map);
-            doc_lens.push(dl);
+        for (dl, tf_map) in tokenized {
             total_tokens += dl as u64;
+            doc_lens.push(dl);
+            doc_tokens.push(tf_map);
         }
         let avgdl = total_tokens as f32 / n as f32;
 
@@ -526,11 +559,14 @@ impl BM25 {
     /// Score multiple queries against their respective document lists.
     /// `queries[i]` is scored against `documents[i]`.
     pub fn score_batch(&self, queries: &[&str], documents: &[&[&str]]) -> Vec<Vec<f32>> {
-        queries
-            .iter()
-            .zip(documents.iter())
-            .map(|(q, docs)| self.score(q, docs))
-            .collect()
+        let pool = capped_pool();
+        pool.install(|| {
+            queries
+                .par_iter()
+                .zip(documents.par_iter())
+                .map(|(q, docs)| self.score(q, docs))
+                .collect()
+        })
     }
 
     // --- Internal helpers ---
