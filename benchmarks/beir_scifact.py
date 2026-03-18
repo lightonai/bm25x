@@ -1,13 +1,22 @@
 """
-BEIR SciFact evaluation: bm25s vs bm25rs — NDCG@10
+BEIR SciFact evaluation: bm25s vs bm25rs — NDCG@10, q/s, d/s
+
+Exit code 1 if bm25rs NDCG@10 drops below threshold.
+Writes a GitHub Actions job summary when $GITHUB_STEP_SUMMARY is set.
 """
 
+import os
+import sys
 import time
 
 import ir_measures
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
 from ir_measures import nDCG
+
+# Fail the CI if bm25rs NDCG@10 falls below this value
+MIN_NDCG10 = 0.64
+
 
 # ───────────────────────────── helpers ─────────────────────────────
 
@@ -22,17 +31,12 @@ def load_scifact():
 
     corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="test")
 
-    # corpus: dict[doc_id] -> {"title": ..., "text": ...}
-    # queries: dict[query_id] -> str
-    # qrels: dict[query_id] -> dict[doc_id] -> relevance
-
     corpus_ids = list(corpus.keys())
     corpus_texts = [
         (corpus[did].get("title") or "") + " " + (corpus[did].get("text") or "")
         for did in corpus_ids
     ]
 
-    # Build ir_measures qrels
     ir_qrels = []
     for qid, rels in qrels.items():
         for did, score in rels.items():
@@ -65,17 +69,22 @@ def run_bm25s(corpus_ids, corpus_texts, test_queries, qrels):
     retriever = bm25s.BM25()
     retriever.index(corpus_tokens)
     t_index = time.perf_counter() - t0
-    print(f"  Index time: {t_index:.3f}s")
+
+    num_docs = len(corpus_texts)
+    docs_per_sec = num_docs / t_index
+    print(f"  Index: {t_index:.3f}s  ({docs_per_sec:.0f} d/s)")
 
     query_list = list(test_queries.values())
     qid_list = list(test_queries.keys())
-
     query_tokens = bm25s.tokenize(query_list, stopwords="en")
 
     t0 = time.perf_counter()
     results = retriever.retrieve(query_tokens, k=10)
     t_search = time.perf_counter() - t0
-    print(f"  Search time ({len(query_list)} queries): {t_search:.3f}s")
+
+    num_queries = len(query_list)
+    queries_per_sec = num_queries / t_search
+    print(f"  Search: {t_search:.3f}s  ({queries_per_sec:.0f} q/s)")
 
     run = []
     for i, qid in enumerate(qid_list):
@@ -88,7 +97,14 @@ def run_bm25s(corpus_ids, corpus_texts, test_queries, qrels):
     metrics = evaluate(run, qrels)
     ndcg10 = metrics[nDCG @ 10]
     print(f"  NDCG@10: {ndcg10:.4f}")
-    return ndcg10, t_index, t_search
+
+    return {
+        "ndcg10": ndcg10,
+        "index_time": t_index,
+        "search_time": t_search,
+        "docs_per_sec": docs_per_sec,
+        "queries_per_sec": queries_per_sec,
+    }
 
 
 # ───────────────────────────── bm25rs ─────────────────────────────
@@ -103,7 +119,10 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
     index = bm25rs.PyBM25Index(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     ids = index.add(corpus_texts)
     t_index = time.perf_counter() - t0
-    print(f"  Index time: {t_index:.3f}s")
+
+    num_docs = len(corpus_texts)
+    docs_per_sec = num_docs / t_index
+    print(f"  Index: {t_index:.3f}s  ({docs_per_sec:.0f} d/s)")
 
     idx_to_did = {idx: corpus_ids[i] for i, idx in enumerate(ids)}
 
@@ -113,7 +132,10 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
     t0 = time.perf_counter()
     all_results = [index.search(q, 10) for q in query_list]
     t_search = time.perf_counter() - t0
-    print(f"  Search time ({len(query_list)} queries): {t_search:.3f}s")
+
+    num_queries = len(query_list)
+    queries_per_sec = num_queries / t_search
+    print(f"  Search: {t_search:.3f}s  ({queries_per_sec:.0f} q/s)")
 
     run = []
     for i, qid in enumerate(qid_list):
@@ -124,7 +146,59 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
     metrics = evaluate(run, qrels)
     ndcg10 = metrics[nDCG @ 10]
     print(f"  NDCG@10: {ndcg10:.4f}")
-    return ndcg10, t_index, t_search
+
+    return {
+        "ndcg10": ndcg10,
+        "index_time": t_index,
+        "search_time": t_search,
+        "docs_per_sec": docs_per_sec,
+        "queries_per_sec": queries_per_sec,
+    }
+
+
+# ───────────────────────────── output ─────────────────────────────
+
+
+def write_summary(bm25s_res, bm25rs_res):
+    """Print results table and optionally write GitHub Actions summary."""
+    header = f"{'Metric':<25} {'bm25s':>12} {'bm25rs':>12}"
+    sep = "-" * 55
+
+    lines = [
+        "BEIR SciFact Benchmark",
+        "=" * 55,
+        header,
+        sep,
+        f"{'NDCG@10':<25} {bm25s_res['ndcg10']:>12.4f} {bm25rs_res['ndcg10']:>12.4f}",
+        f"{'Index (d/s)':<25} {bm25s_res['docs_per_sec']:>12,.0f} {bm25rs_res['docs_per_sec']:>12,.0f}",
+        f"{'Search (q/s)':<25} {bm25s_res['queries_per_sec']:>12,.0f} {bm25rs_res['queries_per_sec']:>12,.0f}",
+        f"{'Index time (s)':<25} {bm25s_res['index_time']:>12.3f} {bm25rs_res['index_time']:>12.3f}",
+        f"{'Search time (s)':<25} {bm25s_res['search_time']:>12.3f} {bm25rs_res['search_time']:>12.3f}",
+        "=" * 55,
+    ]
+    text = "\n".join(lines)
+    print("\n" + text)
+
+    # Write GitHub Actions job summary (markdown table)
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_path:
+        md = [
+            "## BEIR SciFact Benchmark",
+            "",
+            "| Metric | bm25s | bm25rs |",
+            "|--------|------:|-------:|",
+            f"| NDCG@10 | {bm25s_res['ndcg10']:.4f} | {bm25rs_res['ndcg10']:.4f} |",
+            f"| Index (d/s) | {bm25s_res['docs_per_sec']:,.0f} | {bm25rs_res['docs_per_sec']:,.0f} |",
+            f"| Search (q/s) | {bm25s_res['queries_per_sec']:,.0f} | {bm25rs_res['queries_per_sec']:,.0f} |",
+            f"| Index time (s) | {bm25s_res['index_time']:.3f} | {bm25rs_res['index_time']:.3f} |",
+            f"| Search time (s) | {bm25s_res['search_time']:.3f} | {bm25rs_res['search_time']:.3f} |",
+            "",
+            f"**Threshold check:** bm25rs NDCG@10 = {bm25rs_res['ndcg10']:.4f} "
+            f"(min: {MIN_NDCG10}) "
+            f"{'✅ PASS' if bm25rs_res['ndcg10'] >= MIN_NDCG10 else '❌ FAIL'}",
+        ]
+        with open(summary_path, "a") as f:
+            f.write("\n".join(md) + "\n")
 
 
 # ───────────────────────────── main ───────────────────────────────
@@ -133,22 +207,20 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
 def main():
     corpus_ids, corpus_texts, test_queries, qrels = load_scifact()
 
-    ndcg_bm25s, idx_s, search_s = run_bm25s(
-        corpus_ids, corpus_texts, test_queries, qrels
-    )
-    ndcg_bm25rs, idx_rs, search_rs = run_bm25rs(
-        corpus_ids, corpus_texts, test_queries, qrels
-    )
+    bm25s_res = run_bm25s(corpus_ids, corpus_texts, test_queries, qrels)
+    bm25rs_res = run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels)
 
-    print("\n" + "=" * 60)
-    print(f"{'BEIR SciFact Results'}")
-    print("=" * 60)
-    print(f"{'Metric':<25} {'bm25s':>12} {'bm25rs':>12}")
-    print("-" * 60)
-    print(f"{'NDCG@10':<25} {ndcg_bm25s:>12.4f} {ndcg_bm25rs:>12.4f}")
-    print(f"{'Index time (s)':<25} {idx_s:>12.3f} {idx_rs:>12.3f}")
-    print(f"{'Search time (s)':<25} {search_s:>12.3f} {search_rs:>12.3f}")
-    print("=" * 60)
+    write_summary(bm25s_res, bm25rs_res)
+
+    # Gate: fail CI if NDCG@10 is below threshold
+    if bm25rs_res["ndcg10"] < MIN_NDCG10:
+        print(
+            f"\nFAIL: bm25rs NDCG@10 = {bm25rs_res['ndcg10']:.4f} < {MIN_NDCG10}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    print(f"\nPASS: bm25rs NDCG@10 = {bm25rs_res['ndcg10']:.4f} >= {MIN_NDCG10}")
 
 
 if __name__ == "__main__":

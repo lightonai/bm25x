@@ -46,3 +46,26 @@ jobs:
       - run: pip install ruff isort
       - run: ruff check benchmarks/
       - run: isort --check-only benchmarks/
+
+  benchmark:
+    name: Benchmark (BEIR SciFact)
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: pip install maturin bm25s ir-measures beir
+
+      - name: Build bm25rs Python bindings
+        working-directory: python
+        run: maturin develop --release
+
+      - name: Run BEIR SciFact benchmark
+        run: python benchmarks/beir_scifact.py
