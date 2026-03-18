@@ -109,6 +109,16 @@ Create an empty index.
 | Index time | 0.581s | **0.190s** (3.1x faster) |
 | Search time | 0.031s | **0.011s** (2.8x faster) |
 
+### BEIR MS MARCO — 8.8M documents, 6,980 queries
+
+| Metric | bm25s | bm25rs |
+|---|---|---|
+| **NDCG@10** | 0.2124 | **0.2186** |
+| Index time | 377.9s | **106.6s** (3.5x faster) |
+| Index throughput | 23,395 d/s | **82,910 d/s** |
+| Search throughput | 16 q/s | **65 q/s** (4x faster) |
+| Mmap mem delta | 153 MB | **109 MB** |
+
 ### Synthetic corpus (100k docs, 1k queries)
 
 | Metric | bm25s | bm25rs |
@@ -121,7 +131,7 @@ Create an empty index.
 | Delete 3 docs | N/A | 0.006ms |
 | Update 1 doc | N/A | 3.7ms |
 
-Search on the synthetic corpus is slower due to the lazy scoring tradeoff (scores computed at query time to enable streaming). On real-world data (SciFact), bm25rs is faster across the board.
+Search on the synthetic corpus is slower due to the lazy scoring tradeoff (scores computed at query time to enable streaming). On real-world data (SciFact and MS MARCO), bm25rs is faster across the board — up to 4x faster search on MS MARCO.
 
 ## Design
 
