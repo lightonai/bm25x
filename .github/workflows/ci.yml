@@ -43,9 +43,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff 'isort>=6,<7'
+      - run: pip install ruff
       - run: ruff check benchmarks/
-      - run: isort --check-only benchmarks/
+      - run: ruff check --select I benchmarks/
 
   benchmark:
     name: Benchmark (BEIR SciFact)
