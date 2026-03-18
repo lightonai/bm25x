@@ -1,0 +1,10 @@
+target/
+.venv/
+__pycache__/
+*.pyc
+*.so
+*.dylib
+benchmarks/data/
+/tmp/
+*.egg-info/
+dist/

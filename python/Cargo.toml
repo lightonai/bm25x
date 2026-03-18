@@ -1,0 +1,12 @@
+[package]
+name = "bm25rs-python"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "bm25rs_python"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module"] }
+bm25rs = { path = ".." }
