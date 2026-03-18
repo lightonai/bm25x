@@ -107,6 +107,28 @@ impl MmapData {
             f(entry.doc_id, entry.tf);
         }
     }
+
+    /// Binary search for a specific doc_id in a term's posting list.
+    pub fn get_tf(&self, term_id: u32, doc_id: u32) -> Option<u32> {
+        if term_id >= self.num_terms {
+            return None;
+        }
+        let offsets = unsafe {
+            std::slice::from_raw_parts(
+                self.offsets_mmap.as_ptr() as *const TermOffset,
+                self.num_terms as usize,
+            )
+        };
+        let to = &offsets[term_id as usize];
+        let entries = unsafe {
+            let base = self.postings_mmap.as_ptr().add(to.offset as usize) as *const PostingEntry;
+            std::slice::from_raw_parts(base, to.count as usize)
+        };
+        entries
+            .binary_search_by_key(&doc_id, |e| e.doc_id)
+            .ok()
+            .map(|idx| entries[idx].tf)
+    }
 }
 
 impl BM25Index {

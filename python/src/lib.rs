@@ -1,5 +1,5 @@
-use pyo3::prelude::*;
 use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
 
 use bm25rs::{BM25Index, Method};
 
@@ -37,12 +37,14 @@ impl PyBM25Index {
     }
 
     /// Search the index. Returns list of (index, score) tuples.
-    fn search(&self, query: &str, k: usize) -> Vec<(usize, f32)> {
-        self.inner
-            .search(query, k)
-            .into_iter()
-            .map(|r| (r.index, r.score))
-            .collect()
+    /// If `allowed_ids` is provided, only those document IDs are scored (pre-filtering).
+    #[pyo3(signature = (query, k, allowed_ids=None))]
+    fn search(&self, query: &str, k: usize, allowed_ids: Option<Vec<usize>>) -> Vec<(usize, f32)> {
+        let results = match allowed_ids {
+            Some(ids) => self.inner.search_filtered(query, k, &ids),
+            None => self.inner.search(query, k),
+        };
+        results.into_iter().map(|r| (r.index, r.score)).collect()
     }
 
     /// Delete documents by their indices.

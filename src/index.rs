@@ -162,10 +162,9 @@ impl BM25Index {
                 None => continue,
             };
             if !seen_terms.insert(term_id) {
-                continue; // already processed this term
+                continue;
             }
 
-            // Use cached doc_freqs when possible (no deletions)
             let df = if !has_deleted {
                 self.doc_freqs.get(term_id as usize).copied().unwrap_or(0)
             } else {
@@ -191,9 +190,100 @@ impl BM25Index {
             });
         }
 
-        // Top-k selection using a min-heap
+        Self::topk_from_scores(&scores, &touched, k)
+    }
+
+    /// Search restricted to a subset of document IDs (pre-filtering).
+    /// Only documents whose index is in `allowed_ids` will be scored.
+    /// IDF is computed from global corpus stats so scores stay comparable.
+    ///
+    /// Uses a doc-centric approach: iterates allowed IDs and looks up each doc's
+    /// TF via binary search on posting lists. Cost is O(|allowed| * |query_terms| * log(posting_len))
+    /// which is much faster than scanning full posting lists when |allowed| is small.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        k: usize,
+        allowed_ids: &[usize],
+    ) -> Vec<SearchResult> {
+        if self.num_docs == 0 || allowed_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let query_tokens = self.tokenizer.tokenize_owned(query);
+        let params = ScoringParams {
+            k1: self.k1,
+            b: self.b,
+            delta: self.delta,
+            avgdl: self.total_tokens as f32 / self.num_docs as f32,
+        };
+        let has_deleted = !self.deleted.is_empty();
+
+        // Resolve query tokens to term_ids + IDF values
+        let mut query_terms: Vec<(u32, f32)> = Vec::new();
+        let mut seen_terms: HashSet<u32> = HashSet::new();
+        for token in &query_tokens {
+            let term_id = match self.vocab.get(token.as_str()) {
+                Some(&id) => id,
+                None => continue,
+            };
+            if !seen_terms.insert(term_id) {
+                continue;
+            }
+            let df = if !has_deleted {
+                self.doc_freqs.get(term_id as usize).copied().unwrap_or(0)
+            } else {
+                self.doc_freq_fast(term_id, true)
+            };
+            if df == 0 {
+                continue;
+            }
+            query_terms.push((term_id, scoring::idf(self.method, self.num_docs, df)));
+        }
+        if query_terms.is_empty() {
+            return Vec::new();
+        }
+
+        // Doc-centric scoring: for each allowed doc, look up TF via binary search.
+        // Cost: O(|allowed| * |query_terms| * log(posting_len))
         let mut heap = BinaryHeap::with_capacity(k + 1);
-        for doc_id in touched {
+        for &doc_idx in allowed_ids {
+            let doc_id = doc_idx as u32;
+            if doc_id >= self.next_doc_id {
+                continue;
+            }
+            if has_deleted && self.deleted.contains(&doc_id) {
+                continue;
+            }
+            let dl = self.get_doc_length(doc_id);
+            let mut total_score = 0.0f32;
+            for &(term_id, idf_val) in &query_terms {
+                if let Some(tf) = self.get_tf(term_id, doc_id) {
+                    total_score += scoring::score(self.method, tf, dl, &params, idf_val);
+                }
+            }
+            if total_score > 0.0 {
+                heap.push(MinScored(total_score, doc_id));
+                if heap.len() > k {
+                    heap.pop();
+                }
+            }
+        }
+
+        let mut results: Vec<SearchResult> = heap
+            .into_iter()
+            .map(|MinScored(score, doc_id)| SearchResult {
+                index: doc_id as usize,
+                score,
+            })
+            .collect();
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(Ordering::Equal));
+        results
+    }
+
+    fn topk_from_scores(scores: &[f32], touched: &[u32], k: usize) -> Vec<SearchResult> {
+        let mut heap = BinaryHeap::with_capacity(k + 1);
+        for &doc_id in touched {
             let s = scores[doc_id as usize];
             if s > 0.0 {
                 heap.push(MinScored(s, doc_id));
@@ -202,8 +292,6 @@ impl BM25Index {
                 }
             }
         }
-
-        // Drain and sort descending
         let mut results: Vec<SearchResult> = heap
             .into_iter()
             .map(|MinScored(score, doc_id)| SearchResult {
@@ -266,7 +354,10 @@ impl BM25Index {
 
         for (token, tf) in tf_map {
             let term_id = self.get_or_create_term(&token);
-            self.postings[term_id as usize].push((id, tf));
+            let plist = &mut self.postings[term_id as usize];
+            // Insert sorted to maintain binary-search invariant
+            let pos = plist.partition_point(|&(did, _)| did < id);
+            plist.insert(pos, (id, tf));
             self.doc_freqs[term_id as usize] += 1;
         }
 
@@ -355,6 +446,22 @@ impl BM25Index {
             for &(doc_id, tf) in postings {
                 f(doc_id, tf);
             }
+        }
+    }
+
+    /// Look up term frequency for a specific (term_id, doc_id) pair.
+    /// Uses binary search on posting lists (which are sorted by doc_id).
+    #[inline]
+    fn get_tf(&self, term_id: u32, doc_id: u32) -> Option<u32> {
+        if let Some(ref mmap) = self.mmap_data {
+            mmap.get_tf(term_id, doc_id)
+        } else if let Some(postings) = self.postings.get(term_id as usize) {
+            postings
+                .binary_search_by_key(&doc_id, |&(did, _)| did)
+                .ok()
+                .map(|idx| postings[idx].1)
+        } else {
+            None
         }
     }
 
@@ -540,5 +647,110 @@ mod tests {
             assert!(!results.is_empty(), "{:?} returned no results", method);
             assert_eq!(results[0].index, 0, "{:?} ranked wrong doc first", method);
         }
+    }
+
+    #[test]
+    fn test_search_filtered_basic() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&[
+            "the quick brown fox",  // 0
+            "the lazy brown dog",   // 1
+            "the quick red car",    // 2
+            "the slow brown truck", // 3
+        ]);
+
+        // Unfiltered: "brown" matches 0, 1, 3
+        let results = index.search("brown", 10);
+        assert_eq!(results.len(), 3);
+
+        // Filtered to only {1, 3}: should only return those two
+        let results = index.search_filtered("brown", 10, &[1, 3]);
+        assert_eq!(results.len(), 2);
+        let ids: Vec<usize> = results.iter().map(|r| r.index).collect();
+        assert!(ids.contains(&1));
+        assert!(ids.contains(&3));
+        assert!(!ids.contains(&0));
+    }
+
+    #[test]
+    fn test_search_filtered_respects_k() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&[
+            "apple banana cherry",   // 0
+            "apple date elderberry", // 1
+            "apple fig grape",       // 2
+            "apple hazelnut ice",    // 3
+            "apple jackfruit kiwi",  // 4
+        ]);
+
+        // All 5 match "apple", filter to {0,1,2,3}, ask for k=2
+        let results = index.search_filtered("apple", 2, &[0, 1, 2, 3]);
+        assert_eq!(results.len(), 2);
+        // All filtered docs should be in {0,1,2,3}
+        for r in &results {
+            assert!(r.index <= 3);
+        }
+    }
+
+    #[test]
+    fn test_search_filtered_empty_filter() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&["hello world", "foo bar"]);
+
+        let results = index.search_filtered("hello", 10, &[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_filtered_no_overlap() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&[
+            "the quick brown fox", // 0
+            "the lazy dog",        // 1
+        ]);
+
+        // "fox" only in doc 0, but filter only allows doc 1
+        let results = index.search_filtered("fox", 10, &[1]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_filtered_with_deletions() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&[
+            "alpha beta gamma", // 0
+            "alpha delta",      // 1
+            "alpha epsilon",    // 2
+        ]);
+        index.delete(&[1]);
+
+        // Filter includes deleted doc 1 — it should still be excluded
+        let results = index.search_filtered("alpha", 10, &[0, 1, 2]);
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.index != 1));
+    }
+
+    #[test]
+    fn test_search_filtered_scores_match_unfiltered() {
+        let mut index = BM25Index::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        index.add(&[
+            "rust is fast and safe",    // 0
+            "python is slow but easy",  // 1
+            "rust and python together", // 2
+        ]);
+
+        // Score for doc 0 should be the same whether we filter or not
+        // (IDF uses global stats in both cases)
+        let unfiltered = index.search("rust", 10);
+        let filtered = index.search_filtered("rust", 10, &[0]);
+
+        let score_unfiltered = unfiltered.iter().find(|r| r.index == 0).unwrap().score;
+        let score_filtered = filtered.iter().find(|r| r.index == 0).unwrap().score;
+        assert!(
+            (score_unfiltered - score_filtered).abs() < 1e-6,
+            "scores differ: {} vs {}",
+            score_unfiltered,
+            score_filtered
+        );
     }
 }
