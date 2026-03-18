@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 100">
+  <defs>
+    <linearGradient id="v3-blue" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5b9bd5" />
+      <stop offset="100%" style="stop-color:#3a7cc3" />
+    </linearGradient>
+  </defs>
+  <!-- Outline strokes for contrast on both light and dark backgrounds -->
+  <text x="210" y="68" text-anchor="middle" font-family="'Inter','Helvetica Neue','Arial',sans-serif" font-size="62" letter-spacing="-9">
+    <!-- "bm" white outline for dark bg visibility -->
+    <tspan fill="#111" font-weight="800" stroke="#ffffff" stroke-width="0.8" paint-order="stroke">bm</tspan>
+    <!-- "25" white outline for dark bg visibility -->
+    <tspan fill="#666" font-weight="300" stroke="#ffffff" stroke-width="0.8" paint-order="stroke">25</tspan>
+    <!-- "x" black outline for light bg visibility -->
+    <tspan fill="#ffffff" font-weight="800" stroke="#000000" stroke-width="0.8" paint-order="stroke">x</tspan>
+  </text>
+</svg>

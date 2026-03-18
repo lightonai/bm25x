@@ -1,27 +1,23 @@
-# bm25x
+<p align="center">
+  <img src="assets/logo.svg" alt="bm25x" width="400" />
+</p>
 
-A fast, streaming-friendly BM25 search engine written in Rust with memory-mapped (mmap) index support.
+<p align="center">
+  <a href="https://crates.io/crates/bm25x"><img src="https://img.shields.io/crates/v/bm25x?style=flat-square&color=4facfe" alt="crates.io" /></a>
+  <a href="https://pypi.org/project/bm25x/"><img src="https://img.shields.io/pypi/v/bm25x?style=flat-square&color=4facfe" alt="PyPI" /></a>
+  <a href="https://github.com/lightonai/bm25x/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-white?style=flat-square" alt="License" /></a>
+</p>
 
-Inspired by [bm25s](https://github.com/xhluca/bm25s), but designed from the ground up for incremental indexing — add, delete, and update documents without rebuilding the entire index.
+BM25 search engine in Rust with Python bindings. All 5 BM25 variants, streaming add/delete/update, pre-filtered search (up to 600x faster), mmap indices, and auto-persistence.
 
-## Features
-
-- **All 5 BM25 variants**: Lucene (default), Robertson, ATIRE, BM25L, BM25+
-- **Streaming index**: Add documents incrementally, delete by ID, update in-place
-- **Pre-filtered search**: Score only a subset of documents — up to 600x faster
-- **Memory-mapped storage**: Load large indices with minimal RAM via mmap
-- **Auto-persistence**: Point to a directory and the index saves/loads automatically
-- **Python bindings**: Via [maturin](https://github.com/PyO3/maturin) / PyO3
+---
 
 ## Python
 
 ### Install
 
 ```bash
-cd python
-uv venv && source .venv/bin/activate
-uv pip install maturin
-maturin develop --release
+pip install bm25x
 ```
 
 ### Usage
@@ -46,6 +42,13 @@ index.add(["a brand new document"])
 index.delete([1])
 index.update(0, "replaced text for doc zero")
 
+# Score a query against arbitrary documents (not in the index)
+scores = index.score("quick fox", ["the quick brown fox", "lazy dog"])
+# scores = [0.4821, 0.0]
+
+# Batch scoring — multiple queries against their respective doc lists
+scores = index.score(["fox", "dog"], [["fox runs", "cat naps"], ["big dog", "small bird"]])
+
 # Reload later — just point to the same directory
 index = BM25(index="./my_index")  # loads existing index, ready to search
 ```
@@ -63,17 +66,7 @@ BM25(
 )
 ```
 
-### Methods
-
-| Method | Description |
-|---|---|
-| `add(docs) -> list[int]` | Add documents (list of strings), returns assigned indices |
-| `search(query, k, subset=None) -> list[tuple[int, float]]` | Top-k search. Pass `subset` to restrict scoring to specific doc IDs |
-| `delete(doc_ids)` | Delete documents by their indices |
-| `update(doc_id, text)` | Replace a document's text |
-| `save(index)` | Explicit save (only needed for in-memory indices) |
-| `load(index, mmap=False)` | Load from directory (static method) |
-| `len(index)` | Number of active documents |
+---
 
 ## Rust
 
@@ -87,10 +80,13 @@ bm25x = "0.1"
 ### Usage
 
 ```rust
-use bm25x::{BM25, Method};
+use bm25x::{BM25, Method, TokenizerMode};
 
-// Create an index
-let mut index = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, true);
+// Open a persistent index (auto-saves on every mutation)
+let mut index = BM25::open(
+    "./my_index", Method::Lucene, 1.5, 0.75, 0.5,
+    TokenizerMode::UnicodeStem, true,
+).unwrap();
 
 // Add documents (returns assigned indices)
 let ids = index.add(&[
@@ -108,14 +104,25 @@ for r in &results {
 // Pre-filtered search — only score documents in the subset
 let results = index.search_filtered("quick fox", 10, &[0, 2]);
 
-// Streaming mutations
+// Streaming mutations (auto-saved to disk)
 index.add(&["a brand new document"]);
 index.delete(&[1]);
 index.update(0, "updated text for doc zero");
 
-// Save / load with mmap
-index.save("./my_index").unwrap();
-let index = BM25::load("./my_index", true).unwrap(); // mmap=true
+// Score a query against arbitrary documents (not in the index)
+let scores = index.score("quick fox", &["the quick brown fox", "lazy dog"]);
+
+// Batch scoring — multiple queries against their respective doc lists
+let scores = index.score_batch(
+    &["fox", "dog"],
+    &[&["fox runs", "cat naps"], &["big dog", "small bird"]],
+);
+
+// Reload later — just point to the same directory
+let index = BM25::open(
+    "./my_index", Method::Lucene, 1.5, 0.75, 0.5,
+    TokenizerMode::UnicodeStem, true,
+).unwrap(); // loads existing index, ready to search
 ```
 
 ### API
@@ -142,44 +149,35 @@ fn len(&self) -> usize
 fn is_empty(&self) -> bool
 ```
 
+---
+
 ## Benchmarks
 
-### BEIR SciFact — 5k documents, 300 queries
+<p align="center">
+  <img src="assets/benchmarks.png" alt="bm25x benchmarks" width="100%" />
+</p>
 
-| Metric | bm25s | bm25x |
-|---|---|---|
-| **NDCG@10** | 0.6617 | **0.6650** |
-| Index time | 0.581s | **0.190s** (3.1x faster) |
-| Search time | 0.031s | **0.011s** (2.8x faster) |
+> [BEIR](https://github.com/beir-cellar/beir) datasets. Same or better NDCG@10 than bm25s, **3.5-6x faster** indexing, **1-4x faster** search.
 
-### BEIR MS MARCO — 8.8M documents, 6,980 queries
-
-| Metric | bm25s | bm25x |
-|---|---|---|
-| **NDCG@10** | 0.2124 | **0.2186** |
-| Index time | 377.9s | **106.6s** (3.5x faster) |
-| Index throughput | 23,395 d/s | **82,910 d/s** |
-| Search throughput | 16 q/s | **65 q/s** (4x faster) |
-| Mmap mem delta | 153 MB | **109 MB** |
-
-### Pre-filtered search — 100k documents, 1k queries
-
-| Filter size | Throughput | Speedup |
-|---|---|---|
-| No filter | 592 q/s | baseline |
-| 1,000 docs | 4,286 q/s | 7x |
-| 100 docs | 52,000 q/s | 88x |
-| 10 docs | 366,000 q/s | 618x |
+---
 
 ## Design
 
 bm25s pre-computes all BM25 scores at index time (eager scoring). This makes queries fast but rebuilding the index is required to add or remove documents.
 
-bm25x uses **lazy scoring** — it stores raw term frequencies in an inverted index and computes BM25 scores at query time. This makes the index naturally streaming-friendly: add, delete, and update are cheap operations that don't require a full rebuild.
+bm25x does **lazy scoring** -- raw term frequencies go into an inverted index, BM25 scores are computed at query time. So add/delete/update are cheap; no full rebuild needed.
 
-Pre-filtered search uses a **doc-centric** approach: instead of scanning posting lists, it iterates only the subset and binary-searches each document's term frequency. This makes it O(|subset| * |query_terms| * log n) instead of O(|posting_list|).
+> **Note:** Deleting a document compacts the index -- all documents after it shift down by one. For example, deleting doc 1 from [0, 1, 2] makes old doc 2 become new doc 1.
 
-On-disk, the index uses a flat binary format with memory-mapped postings and document lengths, keeping RAM usage minimal for large indices.
+Pre-filtered search is **doc-centric**: instead of scanning posting lists, it iterates only the subset and binary-searches each document's term frequency. O(|subset| _ |query_terms| _ log n) instead of O(|posting_list|).
+
+On disk, the index is a flat binary format with mmap'd postings and doc lengths. RAM stays low even for large indices.
+
+---
+
+## Acknowledgements
+
+Started from [bm25s](https://github.com/xhluca/bm25s), rebuilt for incremental indexing -- add, delete, and update without rebuilding the whole index.
 
 ## License
 
