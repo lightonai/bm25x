@@ -27,7 +27,7 @@ maturin develop --release
 ### Usage
 
 ```python
-from bm25rs_python import BM25
+from bm25rs import BM25
 
 # Create a persistent index (auto-saves on every mutation)
 index = BM25(index="./my_index")

@@ -111,12 +111,12 @@ def run_bm25s(corpus_ids, corpus_texts, test_queries, qrels):
 
 
 def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
-    import bm25rs_python as bm25rs
+    import bm25rs
 
     print("\n=== bm25rs ===")
 
     t0 = time.perf_counter()
-    index = bm25rs.PyBM25Index(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     ids = index.add(corpus_texts)
     t_index = time.perf_counter() - t0
 

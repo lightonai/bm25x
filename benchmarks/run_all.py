@@ -57,13 +57,13 @@ def bench_bm25s(corpus, queries):
 
 
 def bench_bm25rs(corpus, queries):
-    import bm25rs_python as bm25rs
+    import bm25rs
 
     results = {}
 
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.PyBM25Index(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     index.add(corpus)
     results["index_time"] = time.perf_counter() - t0
     results["index_mem_delta"] = get_memory_mb() - mem_before
@@ -78,7 +78,7 @@ def bench_bm25rs(corpus, queries):
 
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.PyBM25Index.load(index_dir, mmap=True)
+    index = bm25rs.BM25.load(index_dir, mmap=True)
     results["load_time"] = time.perf_counter() - t0
     results["load_mem_delta"] = get_memory_mb() - mem_before
 

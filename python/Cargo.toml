@@ -6,9 +6,9 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "bm25rs_python"
+name = "bm25rs"
 crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module"] }
-bm25rs = { path = ".." }
+bm25rs-core = { path = "..", package = "bm25rs" }

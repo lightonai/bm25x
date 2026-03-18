@@ -5,8 +5,9 @@ import os
 import shutil
 import time
 
-import bm25rs_python as bm25rs
 import psutil
+
+import bm25rs
 
 
 def get_memory_mb():
@@ -28,7 +29,7 @@ def main():
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
 
-    index = bm25rs.PyBM25Index(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     index.add(corpus)
 
     t_index = time.perf_counter() - t0
@@ -51,7 +52,7 @@ def main():
 
     mem_before_mmap = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.PyBM25Index.load(index_dir, mmap=True)
+    index = bm25rs.BM25.load(index_dir, mmap=True)
     t_load = time.perf_counter() - t0
     mem_after_mmap = get_memory_mb()
     print(f"[bm25rs] Mmap load time: {t_load:.3f}s")
