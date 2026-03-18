@@ -909,32 +909,166 @@ mod tests {
         assert!(results[1][0] > 0.0); // "rust" matches "rust lang"
     }
 
-    #[test]
-    fn test_score_matches_index_search() {
-        // Scores from score() should match scores from index+search
-        // when the same documents are used
-        let docs = &[
-            "alpha beta gamma",
-            "beta gamma delta",
-            "gamma delta epsilon",
-        ];
-        let query = "beta gamma";
+    /// Helper: assert score() and index+search produce identical scores.
+    fn assert_scores_match(
+        method: Method,
+        k1: f32,
+        b: f32,
+        delta: f32,
+        use_stopwords: bool,
+        query: &str,
+        docs: &[&str],
+    ) {
+        let scorer = BM25::new(method, k1, b, delta, use_stopwords);
+        let direct = scorer.score(query, docs);
 
-        let scorer = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, false);
-        let direct_scores = scorer.score(query, docs);
-
-        let mut index = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        let mut index = BM25::new(method, k1, b, delta, use_stopwords);
         index.add(docs).unwrap();
-        let results = index.search(query, 10);
 
-        // Every indexed result should have the same score as direct scoring
-        for r in &results {
+        // Check every document — including zero-scoring ones
+        for (i, &ds) in direct.iter().enumerate() {
+            let indexed_score = index
+                .search(query, docs.len())
+                .iter()
+                .find(|r| r.index == i)
+                .map(|r| r.score)
+                .unwrap_or(0.0);
             assert!(
-                (r.score - direct_scores[r.index]).abs() < 1e-6,
-                "doc {}: index score {} != direct score {}",
-                r.index,
-                r.score,
-                direct_scores[r.index]
+                (ds - indexed_score).abs() < 1e-6,
+                "{:?} doc {}: score()={} != search()={} (query={:?})",
+                method,
+                i,
+                ds,
+                indexed_score,
+                query
+            );
+        }
+    }
+
+    #[test]
+    fn test_score_matches_search_lucene() {
+        assert_scores_match(
+            Method::Lucene,
+            1.5,
+            0.75,
+            0.5,
+            false,
+            "beta gamma",
+            &[
+                "alpha beta gamma",
+                "beta gamma delta",
+                "gamma delta epsilon",
+            ],
+        );
+    }
+
+    #[test]
+    fn test_score_matches_search_all_methods() {
+        let docs = &[
+            "the quick brown fox jumps over the lazy dog",
+            "a brown dog chased the fox",
+            "quick red car on the highway",
+            "lazy sleeping cat on the mat",
+        ];
+        for method in [
+            Method::Lucene,
+            Method::Robertson,
+            Method::Atire,
+            Method::BM25L,
+            Method::BM25Plus,
+        ] {
+            assert_scores_match(method, 1.5, 0.75, 0.5, false, "brown fox", docs);
+            assert_scores_match(method, 1.5, 0.75, 0.5, false, "lazy", docs);
+            assert_scores_match(method, 1.5, 0.75, 0.5, false, "quick brown fox", docs);
+            assert_scores_match(method, 1.5, 0.75, 0.5, false, "nonexistent", docs);
+        }
+    }
+
+    #[test]
+    fn test_score_matches_search_with_stopwords() {
+        let docs = &[
+            "the quick brown fox",
+            "a lazy brown dog",
+            "the fox is quick and clever",
+        ];
+        // With stopwords enabled, "the" and "is" are removed
+        assert_scores_match(Method::Lucene, 1.5, 0.75, 0.5, true, "the quick fox", docs);
+        assert_scores_match(Method::Lucene, 1.5, 0.75, 0.5, true, "brown", docs);
+    }
+
+    #[test]
+    fn test_score_matches_search_custom_params() {
+        let docs = &["rust is fast", "python is easy", "rust and python together"];
+        // Different k1, b values
+        assert_scores_match(Method::Lucene, 2.0, 0.5, 0.5, false, "rust", docs);
+        assert_scores_match(Method::Atire, 1.2, 0.9, 0.5, false, "rust python", docs);
+        assert_scores_match(Method::BM25Plus, 1.5, 0.75, 1.0, false, "rust python", docs);
+    }
+
+    #[test]
+    fn test_score_matches_search_single_doc() {
+        assert_scores_match(
+            Method::Lucene,
+            1.5,
+            0.75,
+            0.5,
+            false,
+            "hello",
+            &["hello world"],
+        );
+    }
+
+    #[test]
+    fn test_score_matches_search_no_match() {
+        let scorer = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        let scores = scorer.score("xyz", &["alpha beta", "gamma delta"]);
+        assert!(scores.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn test_score_matches_search_duplicate_query_terms() {
+        // "fox fox" should produce the same score as "fox"
+        let docs = &["the quick brown fox", "lazy dog"];
+        let scorer = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        let scores_single = scorer.score("fox", docs);
+        let scores_dup = scorer.score("fox fox", docs);
+        for i in 0..docs.len() {
+            assert!(
+                (scores_single[i] - scores_dup[i]).abs() < 1e-6,
+                "duplicate query terms changed score for doc {}: {} vs {}",
+                i,
+                scores_single[i],
+                scores_dup[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_score_batch_matches_individual() {
+        let scorer = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, false);
+        let docs1: &[&str] = &["the cat sat", "the dog ran"];
+        let docs2: &[&str] = &["rust lang", "python lang", "go lang"];
+
+        let batch = scorer.score_batch(&["cat", "rust"], &[docs1, docs2]);
+        let individual1 = scorer.score("cat", docs1);
+        let individual2 = scorer.score("rust", docs2);
+
+        for i in 0..docs1.len() {
+            assert!(
+                (batch[0][i] - individual1[i]).abs() < 1e-6,
+                "batch[0][{}]={} != individual={}",
+                i,
+                batch[0][i],
+                individual1[i]
+            );
+        }
+        for i in 0..docs2.len() {
+            assert!(
+                (batch[1][i] - individual2[i]).abs() < 1e-6,
+                "batch[1][{}]={} != individual={}",
+                i,
+                batch[1][i],
+                individual2[i]
             );
         }
     }
