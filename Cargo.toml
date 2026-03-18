@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "A fast, streaming-friendly BM25 search engine with mmap support"
 license = "MIT"
+repository = "https://github.com/lightonai/bm25x"
+homepage = "https://github.com/lightonai/bm25x"
+keywords = ["bm25", "search", "information-retrieval", "mmap", "streaming"]
+categories = ["text-processing", "database"]
+readme = "README.md"
+exclude = ["benchmarks/", "python/", ".github/", ".pre-commit-config.yaml"]
 
 [dependencies]
 memmap2 = "0.9"
