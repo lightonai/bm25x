@@ -43,7 +43,7 @@ impl PyBM25 {
     /// If `index` is provided, the index is persisted to that directory.
     /// `tokenizer` can be: "plain", "unicode", "stem", "unicode_stem" (default).
     #[new]
-    #[pyo3(signature = (index=None, method="lucene", k1=1.5, b=0.75, delta=0.5, tokenizer="stem", use_stopwords=true))]
+    #[pyo3(signature = (index=None, method="lucene", k1=1.5, b=0.75, delta=0.5, tokenizer="unicode_stem", use_stopwords=true))]
     fn new(
         index: Option<&str>,
         method: &str,

@@ -75,7 +75,14 @@ pub struct BM25 {
 impl BM25 {
     /// Create a new empty index.
     pub fn new(method: Method, k1: f32, b: f32, delta: f32, use_stopwords: bool) -> Self {
-        Self::with_tokenizer(method, k1, b, delta, TokenizerMode::Stem, use_stopwords)
+        Self::with_tokenizer(
+            method,
+            k1,
+            b,
+            delta,
+            TokenizerMode::UnicodeStem,
+            use_stopwords,
+        )
     }
 
     /// Create a new empty index with a specific tokenizer mode.
