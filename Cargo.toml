@@ -3,7 +3,7 @@ name = "bm25x"
 version = "0.2.0"
 edition = "2021"
 description = "A fast, streaming-friendly BM25 search engine with mmap support"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/lightonai/bm25x"
 homepage = "https://github.com/lightonai/bm25x"
 keywords = ["bm25", "search", "retrieval", "mmap", "streaming"]
@@ -19,7 +19,7 @@ rust-stemmers = "1.2"
 unicode-normalization = "0.1"
 rayon = "1.10"
 rustc-hash = "2"
-cudarc = { version = "0.19", default-features = false, features = ["cuda-version-from-build-system", "driver", "dynamic-loading", "nvrtc"], optional = true }
+cudarc = { version = "0.19", default-features = false, features = ["cuda-11040", "driver", "dynamic-loading", "nvrtc"], optional = true }
 
 [features]
 default = []

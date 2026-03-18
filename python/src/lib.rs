@@ -93,8 +93,12 @@ fn io_err(e: std::io::Error) -> PyErr {
 #[pyclass(name = "BM25")]
 struct PyBM25 {
     inner: bm25x_core::BM25,
+    /// If true, CUDA is required — errors are raised instead of silent fallback.
+    cuda_required: bool,
     #[cfg(feature = "cuda")]
     gpu_search_index: Option<bm25x_core::cuda::GpuSearchIndex>,
+    #[cfg(feature = "cuda")]
+    multi_gpu_index: Option<bm25x_core::multi_gpu::MultiGpuSearchIndex>,
 }
 
 #[pymethods]
@@ -103,8 +107,10 @@ impl PyBM25 {
     ///
     /// If `index` is provided, the index is persisted to that directory.
     /// `tokenizer` can be: "plain", "unicode", "stem", "unicode_stem" (default).
+    /// `cuda`: if True, require CUDA — raises an error if GPU is unavailable.
+    ///         if False (default), auto-detect GPU and fall back to CPU silently.
     #[new]
-    #[pyo3(signature = (index=None, method="lucene", k1=1.5, b=0.75, delta=0.5, tokenizer="unicode_stem", use_stopwords=true))]
+    #[pyo3(signature = (index=None, method="lucene", k1=1.5, b=0.75, delta=0.5, tokenizer="unicode_stem", use_stopwords=true, cuda=false))]
     fn new(
         index: Option<&str>,
         method: &str,
@@ -113,7 +119,17 @@ impl PyBM25 {
         delta: f32,
         tokenizer: &str,
         use_stopwords: bool,
+        cuda: bool,
     ) -> PyResult<Self> {
+        // If cuda=True, verify GPU is available immediately
+        if cuda && !bm25x_core::is_gpu_available() {
+            return Err(PyValueError::new_err(
+                "cuda=True but no CUDA GPU is available. \
+                 Check that CUDA drivers are installed and a GPU is visible \
+                 (CUDA_VISIBLE_DEVICES).",
+            ));
+        }
+
         let m = parse_method(method)?;
         let tok = parse_tokenizer(tokenizer)?;
         let inner = match index {
@@ -124,13 +140,16 @@ impl PyBM25 {
         };
         Ok(PyBM25 {
             inner,
+            cuda_required: cuda,
             #[cfg(feature = "cuda")]
             gpu_search_index: None,
+            #[cfg(feature = "cuda")]
+            multi_gpu_index: None,
         })
     }
 
     /// Upload the index to GPU for fast search. Call once after adding documents.
-    /// Subsequent search() calls will automatically use the GPU.
+    /// Single queries use one GPU. Batch queries auto-dispatch across all GPUs.
     #[cfg(feature = "cuda")]
     fn upload_to_gpu(&mut self) -> PyResult<()> {
         self.gpu_search_index = Some(
@@ -138,6 +157,15 @@ impl PyBM25 {
                 .to_gpu_search_index()
                 .map_err(PyValueError::new_err)?,
         );
+        // Also create multi-GPU index for batch queries
+        match self.inner.to_multi_gpu_search_index() {
+            Ok(mgpu) => {
+                self.multi_gpu_index = Some(mgpu);
+            }
+            Err(e) => {
+                eprintln!("[bm25x] Multi-GPU init failed (batch will use single GPU): {}", e);
+            }
+        }
         Ok(())
     }
 
@@ -200,29 +228,145 @@ impl PyBM25 {
         result.map_err(io_err)
     }
 
-    /// Search the index. Returns list of (index, score) tuples.
-    /// If `subset` is provided, only those document IDs are scored (pre-filtering).
-    /// If to_gpu() was called, uses GPU-accelerated search.
+    /// Search the index. Accepts a single query string or a list of queries.
+    ///
+    /// - Single query: `search("fox", k=10)` → `[(doc_id, score), ...]`
+    /// - Batch queries: `search(["fox", "dog"], k=10)` → `[[(doc_id, score), ...], ...]`
+    /// - With subset: `search("fox", k=10, subset=[0, 2])` for pre-filtered search
+    /// - Batch with subsets: `search(["fox", "dog"], k=10, subset=[[0,2], [1,3]])`
+    ///
+    /// Batch mode is faster: CPU uses rayon parallelism, GPU amortizes kernel overhead.
     #[pyo3(signature = (query, k, subset=None))]
-    fn search(&mut self, query: &str, k: usize, subset: Option<Vec<usize>>) -> Vec<(usize, f32)> {
-        let results = match subset {
-            Some(ids) => self.inner.search_filtered(query, k, &ids),
-            None => {
-                #[cfg(feature = "cuda")]
-                {
-                    if let Some(ref mut gpu_idx) = self.gpu_search_index {
-                        return self
-                            .inner
-                            .search_gpu(gpu_idx, query, k)
-                            .into_iter()
-                            .map(|r| (r.index, r.score))
-                            .collect();
-                    }
+    fn search(
+        &mut self,
+        py: Python<'_>,
+        query: &Bound<'_, PyAny>,
+        k: usize,
+        subset: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        // Auto-upload to GPU only when cuda=True
+        #[cfg(feature = "cuda")]
+        if self.cuda_required && self.gpu_search_index.is_none() && !self.inner.is_empty() {
+            self.gpu_search_index = Some(
+                self.inner
+                    .to_gpu_search_index()
+                    .map_err(|e| {
+                        PyValueError::new_err(format!("cuda=True but GPU upload failed: {}", e))
+                    })?,
+            );
+            self.multi_gpu_index = Some(
+                self.inner
+                    .to_multi_gpu_search_index()
+                    .map_err(|e| {
+                        PyValueError::new_err(format!(
+                            "cuda=True but multi-GPU init failed: {}",
+                            e
+                        ))
+                    })?,
+            );
+        }
+
+        // Check if query is a list (batch mode) or a string (single mode)
+        if let Ok(query_str) = query.extract::<&str>() {
+            // Single query mode
+            let results = match subset {
+                Some(s) => {
+                    let ids: Vec<usize> = s.extract()?;
+                    self.inner.search_filtered(query_str, k, &ids)
                 }
-                self.inner.search(query, k)
-            }
-        };
-        results.into_iter().map(|r| (r.index, r.score)).collect()
+                None => {
+                    #[cfg(feature = "cuda")]
+                    {
+                        if let Some(ref mut gpu_idx) = self.gpu_search_index {
+                            return Ok(self
+                                .inner
+                                .search_gpu(gpu_idx, query_str, k)
+                                .into_iter()
+                                .map(|r| (r.index, r.score))
+                                .collect::<Vec<(usize, f32)>>()
+                                .into_pyobject(py)?
+                                .into_any()
+                                .unbind());
+                        }
+                    }
+                    self.inner.search(query_str, k)
+                }
+            };
+            Ok(results
+                .into_iter()
+                .map(|r| (r.index, r.score))
+                .collect::<Vec<(usize, f32)>>()
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        } else {
+            // Batch mode: list of queries
+            let query_list: Vec<String> = query.extract()?;
+            let query_refs: Vec<&str> = query_list.iter().map(|s| s.as_str()).collect();
+
+            let batch_results = match subset {
+                Some(s) => {
+                    let subset_lists: Vec<Vec<usize>> = s.extract()?;
+                    let subset_refs: Vec<&[usize]> =
+                        subset_lists.iter().map(|v| v.as_slice()).collect();
+                    self.inner
+                        .search_filtered_batch(&query_refs, k, &subset_refs)
+                }
+                None => {
+                    #[cfg(feature = "cuda")]
+                    {
+                        // Multi-GPU batch: distribute queries across all GPUs
+                        if let Some(ref mut mgpu) = self.multi_gpu_index {
+                            return Ok(self
+                                .inner
+                                .search_multi_gpu_batch(mgpu, &query_refs, k)
+                                .into_iter()
+                                .map(|results| {
+                                    results
+                                        .into_iter()
+                                        .map(|r| (r.index, r.score))
+                                        .collect::<Vec<(usize, f32)>>()
+                                })
+                                .collect::<Vec<Vec<(usize, f32)>>>()
+                                .into_pyobject(py)?
+                                .into_any()
+                                .unbind());
+                        }
+                        // Fallback: single-GPU batch
+                        if let Some(ref mut gpu_idx) = self.gpu_search_index {
+                            return Ok(self
+                                .inner
+                                .search_gpu_batch(gpu_idx, &query_refs, k)
+                                .into_iter()
+                                .map(|results| {
+                                    results
+                                        .into_iter()
+                                        .map(|r| (r.index, r.score))
+                                        .collect::<Vec<(usize, f32)>>()
+                                })
+                                .collect::<Vec<Vec<(usize, f32)>>>()
+                                .into_pyobject(py)?
+                                .into_any()
+                                .unbind());
+                        }
+                    }
+                    self.inner.search_batch(&query_refs, k)
+                }
+            };
+
+            Ok(batch_results
+                .into_iter()
+                .map(|results| {
+                    results
+                        .into_iter()
+                        .map(|r| (r.index, r.score))
+                        .collect::<Vec<(usize, f32)>>()
+                })
+                .collect::<Vec<Vec<(usize, f32)>>>()
+                .into_pyobject(py)?
+                .into_any()
+                .unbind())
+        }
     }
 
     /// Delete documents by their indices.
@@ -242,13 +386,21 @@ impl PyBM25 {
 
     /// Load an index from a directory.
     #[staticmethod]
-    #[pyo3(signature = (index, mmap=false))]
-    fn load(index: &str, mmap: bool) -> PyResult<Self> {
+    #[pyo3(signature = (index, mmap=false, cuda=false))]
+    fn load(index: &str, mmap: bool, cuda: bool) -> PyResult<Self> {
+        if cuda && !bm25x_core::is_gpu_available() {
+            return Err(PyValueError::new_err(
+                "cuda=True but no CUDA GPU is available.",
+            ));
+        }
         let inner = bm25x_core::BM25::load(index, mmap).map_err(io_err)?;
         Ok(PyBM25 {
             inner,
+            cuda_required: cuda,
             #[cfg(feature = "cuda")]
             gpu_search_index: None,
+            #[cfg(feature = "cuda")]
+            multi_gpu_index: None,
         })
     }
 

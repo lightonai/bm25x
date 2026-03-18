@@ -1,9 +1,8 @@
-"""Generate benchmark bar charts for README — bm25s vs bm25x vs bm25x GPU."""
+"""Generate benchmark bar charts for README — bm25s vs bm25x (CPU/GPU/batch)."""
 
 import matplotlib.pyplot as plt
 import numpy as np
 
-# ── Light theme ─────────────────────────────────────────────────────
 plt.rcParams.update(
     {
         "figure.facecolor": "#ffffff",
@@ -20,13 +19,14 @@ plt.rcParams.update(
     }
 )
 
-BM25S_COLOR = "#bbb"
-BM25X_COLOR = "#2d8cf0"
-BM25X_GPU_COLOR = "#22c55e"
+COLORS = {
+    "bm25s": "#bbb",
+    "bm25x": "#2d8cf0",
+    "bm25x GPU": "#22c55e",
+    "bm25x batch": "#93c5fd",
+    "4xGPU batch": "#15803d",
+}
 
-# ── Benchmark data (BEIR datasets) ─────────────────────────────────
-# CPU: measured on Apple M3
-# GPU: measured on NVIDIA H100, all datasets
 datasets = [
     "NFCorpus\n3.6k docs",
     "SciFact\n5k docs",
@@ -35,7 +35,7 @@ datasets = [
     "MS MARCO\n8.8M docs",
 ]
 
-# NDCG@10 — GPU identical to CPU (verified on all datasets)
+# NDCG@10
 ndcg_bm25s = [0.3064, 0.6617, 0.1538, 0.2326, 0.2124]
 ndcg_bm25x = [0.3287, 0.6904, 0.1600, 0.2514, 0.2186]
 ndcg_bm25x_gpu = [0.3287, 0.6904, 0.1600, 0.2514, 0.2240]
@@ -43,12 +43,14 @@ ndcg_bm25x_gpu = [0.3287, 0.6904, 0.1600, 0.2514, 0.2240]
 # Index throughput (docs/s)
 index_tput_bm25s = [13_658, 15_138, 17_567, 23_698, 23_395]
 index_tput_bm25x = [70_621, 77_644, 94_390, 144_060, 82_910]
-index_tput_bm25x_gpu = [32_551, 57_570, 68_360, 205_115, 295_458]  # H100 (warm CUDA)
+index_tput_bm25x_gpu = [32_551, 57_570, 68_360, 205_115, 295_458]
 
 # Search throughput (queries/s)
-search_tput_bm25s = [36_992, 18_969, 6_543, 2_431, 16]
-search_tput_bm25x = [128_245, 25_992, 7_032, 4_760, 65]
-search_tput_bm25x_gpu = [6_940, 5_682, 6_197, 5_935, 3_430]  # H100 GPU search (warm)
+search_bm25s = [36_992, 18_969, 6_543, 2_431, 16]
+search_bm25x = [128_245, 25_992, 7_032, 4_760, 65]
+search_bm25x_gpu = [6_940, 5_682, 6_197, 5_935, 3_430]
+search_bm25x_batch = [168_733, 72_805, 24_541, 15_624, 96]
+search_bm25x_4gpu = [20_089, 17_074, 18_780, 17_336, 13_047]
 
 
 def _fmt_tput(v):
@@ -57,55 +59,38 @@ def _fmt_tput(v):
     return f"{v:,.0f}"
 
 
-def grouped_bar_3(
+def grouped_bar(
     ax,
     labels,
-    vals_s,
-    vals_x,
-    vals_gpu,
+    series,
     ylabel,
     title,
     fmt="{:.4f}",
-    show_legend=True,
     log_scale=False,
-    abs_s=None,
-    abs_x=None,
-    abs_gpu=None,
+    abs_values=None,
     abs_unit="",
+    bar_width_scale=1.0,
 ):
-    x = np.arange(len(labels))
-    w = 0.25
+    n_groups = len(labels)
+    n_series = len(series)
+    w = 0.8 / n_series * bar_width_scale
+    x = np.arange(n_groups)
 
-    bars_s = ax.bar(
-        x - w,
-        vals_s,
-        w,
-        label="bm25s",
-        color=BM25S_COLOR,
-        edgecolor="#ffffff",
-        linewidth=0.5,
-        zorder=3,
-    )
-    bars_x = ax.bar(
-        x,
-        vals_x,
-        w,
-        label="bm25x",
-        color=BM25X_COLOR,
-        edgecolor="#ffffff",
-        linewidth=0.5,
-        zorder=3,
-    )
-    bars_gpu = ax.bar(
-        x + w,
-        vals_gpu,
-        w,
-        label="bm25x GPU",
-        color=BM25X_GPU_COLOR,
-        edgecolor="#ffffff",
-        linewidth=0.5,
-        zorder=3,
-    )
+    bars_all = []
+    for i, (name, vals) in enumerate(series):
+        offset = (i - n_series / 2 + 0.5) * w
+        color = COLORS.get(name, "#999")
+        bars = ax.bar(
+            x + offset,
+            vals,
+            w,
+            label=name,
+            color=color,
+            edgecolor="#ffffff",
+            linewidth=0.5,
+            zorder=3,
+        )
+        bars_all.append((name, bars, vals))
 
     if log_scale:
         ax.set_yscale("log")
@@ -117,118 +102,104 @@ def grouped_bar_3(
     ax.yaxis.grid(True, linestyle="--", linewidth=0.5)
     ax.set_axisbelow(True)
 
-    # Value labels on top of bars
-    for i, (bar_s, bar_x, bar_g, vs, vx, vg) in enumerate(
-        zip(bars_s, bars_x, bars_gpu, vals_s, vals_x, vals_gpu)
-    ):
-        for bar, v, color, fw in [
-            (bar_s, vs, "#888", "normal"),
-            (bar_x, vx, "#2d8cf0", "bold"),
-            (bar_g, vg, "#16a34a", "bold"),
-        ]:
-            label = fmt.format(v)
-            y_pos = bar.get_height()
+    for name, bars, vals in bars_all:
+        color = COLORS.get(name, "#999")
+        text_color = color if color != "#bbb" else "#888"
+        for bar, v in zip(bars, vals):
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                y_pos,
-                label,
+                bar.get_height(),
+                fmt.format(v),
                 ha="center",
                 va="bottom",
-                fontsize=6.5,
-                color=color,
-                fontweight=fw,
+                fontsize=6,
+                color=text_color,
+                fontweight="bold",
             )
 
-        # Absolute throughput inside bars
-        if abs_s is not None and abs_x is not None and abs_gpu is not None:
-            for bar, abs_v, color in [
-                (bar_s, abs_s[i], "#555"),
-                (bar_x, abs_x[i], "#fff"),
-                (bar_g, abs_gpu[i], "#fff"),
-            ]:
-                txt = f"{_fmt_tput(abs_v)} {abs_unit}"
+    if abs_values:
+        for (name, bars, _), abs_v in zip(bars_all, abs_values):
+            color_inside = "#555" if name == "bm25s" else "#fff"
+            for bar, av in zip(bars, abs_v):
                 h = bar.get_height()
-                if h > 0.3:
+                if h > (0.3 if not log_scale else 0):
+                    y = h**0.5 if log_scale else h / 2
                     ax.text(
                         bar.get_x() + bar.get_width() / 2,
-                        h**0.5 if log_scale else h / 2,
-                        txt,
+                        y,
+                        f"{_fmt_tput(av)} {abs_unit}",
                         ha="center",
                         va="center",
-                        fontsize=5.5,
-                        color=color,
+                        fontsize=5,
+                        color=color_inside,
                         fontweight="bold",
                         rotation=90,
                     )
 
-    if show_legend:
-        ax.legend(
-            loc="upper left",
-            fontsize=8,
-            facecolor="#fff",
-            edgecolor="#ccc",
-            labelcolor="#333",
-        )
-
+    ax.legend(loc="upper left", fontsize=10, facecolor="#fff", edgecolor="#ccc")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
 
-# ── Compute speedups (bm25s = 1x baseline) ─────────────────────────
-baseline = [1.0] * len(datasets)
-index_speedup_x = [x / s for s, x in zip(index_tput_bm25s, index_tput_bm25x)]
-index_speedup_gpu = [x / s for s, x in zip(index_tput_bm25s, index_tput_bm25x_gpu)]
-search_speedup_x = [x / s for s, x in zip(search_tput_bm25s, search_tput_bm25x)]
-search_speedup_gpu = [x / s for s, x in zip(search_tput_bm25s, search_tput_bm25x_gpu)]
+baseline = [1.0] * 5
+idx_su_x = [x / s for s, x in zip(index_tput_bm25s, index_tput_bm25x)]
+idx_su_gpu = [x / s for s, x in zip(index_tput_bm25s, index_tput_bm25x_gpu)]
+s_su_x = [x / s for s, x in zip(search_bm25s, search_bm25x)]
+s_su_gpu = [x / s for s, x in zip(search_bm25s, search_bm25x_gpu)]
+s_su_batch = [x / s for s, x in zip(search_bm25s, search_bm25x_batch)]
+s_su_4gpu = [x / s for s, x in zip(search_bm25s, search_bm25x_4gpu)]
 
-# ── Generate figure ─────────────────────────────────────────────────
-fig, axes = plt.subplots(1, 3, figsize=(19, 5.5))
-fig.subplots_adjust(wspace=0.3, left=0.05, right=0.97, top=0.88, bottom=0.15)
+# ── Layout: 2 big charts on top, 1 smaller chart below ────────────
+fig, (ax_index, ax_search, ax_ndcg) = plt.subplots(3, 1, figsize=(16, 22))
+fig.subplots_adjust(hspace=0.35, left=0.08, right=0.95, top=0.96, bottom=0.04)
 
-grouped_bar_3(
-    axes[0],
+# Indexing speedup (top left)
+grouped_bar(
+    ax_index,
     datasets,
-    ndcg_bm25s,
-    ndcg_bm25x,
-    ndcg_bm25x_gpu,
-    "NDCG@10",
-    "Retrieval Quality (NDCG@10)",
-    fmt="{:.4f}",
-    show_legend=True,
-)
-
-grouped_bar_3(
-    axes[1],
-    datasets,
-    baseline,
-    index_speedup_x,
-    index_speedup_gpu,
+    [("bm25s", baseline), ("bm25x", idx_su_x), ("bm25x GPU", idx_su_gpu)],
     "speedup vs bm25s (log)",
     "Indexing Speedup",
     fmt="{:.1f}x",
-    show_legend=False,
     log_scale=True,
-    abs_s=index_tput_bm25s,
-    abs_x=index_tput_bm25x,
-    abs_gpu=index_tput_bm25x_gpu,
+    abs_values=[index_tput_bm25s, index_tput_bm25x, index_tput_bm25x_gpu],
     abs_unit="d/s",
 )
 
-grouped_bar_3(
-    axes[2],
+# Search speedup (top right)
+grouped_bar(
+    ax_search,
     datasets,
-    baseline,
-    search_speedup_x,
-    search_speedup_gpu,
+    [
+        ("bm25s", baseline),
+        ("bm25x", s_su_x),
+        ("bm25x batch", s_su_batch),
+        ("bm25x GPU", s_su_gpu),
+        ("4xGPU batch", s_su_4gpu),
+    ],
     "speedup vs bm25s (log)",
     "Search Speedup",
-    fmt="{:.1f}x",
-    show_legend=False,
+    fmt="{:.0f}x",
     log_scale=True,
-    abs_s=search_tput_bm25s,
-    abs_x=search_tput_bm25x,
-    abs_gpu=search_tput_bm25x_gpu,
+    abs_values=[
+        search_bm25s,
+        search_bm25x,
+        search_bm25x_batch,
+        search_bm25x_gpu,
+        search_bm25x_4gpu,
+    ],
     abs_unit="q/s",
+)
+
+# Retrieval quality (bottom, full width)
+grouped_bar(
+    ax_ndcg,
+    datasets,
+    [("bm25s", ndcg_bm25s), ("bm25x", ndcg_bm25x), ("bm25x GPU", ndcg_bm25x_gpu)],
+    "NDCG@10",
+    "Retrieval Quality (NDCG@10)",
+    fmt="{:.4f}",
+    bar_width_scale=0.55,
 )
 
 fig.savefig("assets/benchmarks.png", dpi=200, facecolor="#ffffff")
