@@ -1,4 +1,4 @@
-# bm25rs
+# bm25x
 
 A fast, streaming-friendly BM25 search engine written in Rust with memory-mapped (mmap) index support.
 
@@ -27,7 +27,7 @@ maturin develop --release
 ### Usage
 
 ```python
-from bm25rs import BM25
+from bm25x import BM25
 
 # Create a persistent index (auto-saves on every mutation)
 index = BM25(index="./my_index")
@@ -81,13 +81,13 @@ BM25(
 
 ```toml
 [dependencies]
-bm25rs = "0.1"
+bm25x = "0.1"
 ```
 
 ### Usage
 
 ```rust
-use bm25rs::{BM25, Method};
+use bm25x::{BM25, Method};
 
 // Create an index
 let mut index = BM25::new(Method::Lucene, 1.5, 0.75, 0.5, true);
@@ -146,7 +146,7 @@ fn is_empty(&self) -> bool
 
 ### BEIR SciFact — 5k documents, 300 queries
 
-| Metric | bm25s | bm25rs |
+| Metric | bm25s | bm25x |
 |---|---|---|
 | **NDCG@10** | 0.6617 | **0.6650** |
 | Index time | 0.581s | **0.190s** (3.1x faster) |
@@ -154,7 +154,7 @@ fn is_empty(&self) -> bool
 
 ### BEIR MS MARCO — 8.8M documents, 6,980 queries
 
-| Metric | bm25s | bm25rs |
+| Metric | bm25s | bm25x |
 |---|---|---|
 | **NDCG@10** | 0.2124 | **0.2186** |
 | Index time | 377.9s | **106.6s** (3.5x faster) |
@@ -175,7 +175,7 @@ fn is_empty(&self) -> bool
 
 bm25s pre-computes all BM25 scores at index time (eager scoring). This makes queries fast but rebuilding the index is required to add or remove documents.
 
-bm25rs uses **lazy scoring** — it stores raw term frequencies in an inverted index and computes BM25 scores at query time. This makes the index naturally streaming-friendly: add, delete, and update are cheap operations that don't require a full rebuild.
+bm25x uses **lazy scoring** — it stores raw term frequencies in an inverted index and computes BM25 scores at query time. This makes the index naturally streaming-friendly: add, delete, and update are cheap operations that don't require a full rebuild.
 
 Pre-filtered search uses a **doc-centric** approach: instead of scanning posting lists, it iterates only the subset and binary-searches each document's term frequency. This makes it O(|subset| * |query_terms| * log n) instead of O(|posting_list|).
 

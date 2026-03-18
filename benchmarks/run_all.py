@@ -1,4 +1,4 @@
-"""Run both bm25s and bm25rs benchmarks side by side."""
+"""Run both bm25s and bm25x benchmarks side by side."""
 
 import gc
 import json
@@ -56,20 +56,20 @@ def bench_bm25s(corpus, queries):
     return results
 
 
-def bench_bm25rs(corpus, queries):
-    import bm25rs
+def bench_bm25x(corpus, queries):
+    import bm25x
 
     results = {}
 
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25x.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     index.add(corpus)
     results["index_time"] = time.perf_counter() - t0
     results["index_mem_delta"] = get_memory_mb() - mem_before
 
     # Save and reload with mmap
-    index_dir = "/tmp/bm25rs_bench_index"
+    index_dir = "/tmp/bm25x_bench_index"
     if os.path.exists(index_dir):
         shutil.rmtree(index_dir)
     index.save(index_dir)
@@ -78,7 +78,7 @@ def bench_bm25rs(corpus, queries):
 
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.BM25.load(index_dir, mmap=True)
+    index = bm25x.BM25.load(index_dir, mmap=True)
     results["load_time"] = time.perf_counter() - t0
     results["load_mem_delta"] = get_memory_mb() - mem_before
 
@@ -121,35 +121,35 @@ def main():
     print("\n--- bm25s (Python, mmap) ---")
     bm25s_res = bench_bm25s(corpus, queries)
 
-    print("\n--- bm25rs (Rust, mmap) ---")
-    bm25rs_res = bench_bm25rs(corpus, queries)
+    print("\n--- bm25x (Rust, mmap) ---")
+    bm25x_res = bench_bm25x(corpus, queries)
 
     print("\n" + "=" * 70)
-    print(f"{'Metric':<30} {'bm25s':>12} {'bm25rs':>12} {'Speedup':>10}")
+    print(f"{'Metric':<30} {'bm25s':>12} {'bm25x':>12} {'Speedup':>10}")
     print("-" * 70)
     print(
-        f"{'Index time (s)':<30} {bm25s_res['index_time']:>12.3f} {bm25rs_res['index_time']:>12.3f} {bm25s_res['index_time'] / bm25rs_res['index_time']:>9.1f}x"
+        f"{'Index time (s)':<30} {bm25s_res['index_time']:>12.3f} {bm25x_res['index_time']:>12.3f} {bm25s_res['index_time'] / bm25x_res['index_time']:>9.1f}x"
     )
     print(
-        f"{'Index mem delta (MB)':<30} {bm25s_res['index_mem_delta']:>12.1f} {bm25rs_res['index_mem_delta']:>12.1f} {bm25s_res['index_mem_delta'] / bm25rs_res['index_mem_delta']:>9.1f}x"
+        f"{'Index mem delta (MB)':<30} {bm25s_res['index_mem_delta']:>12.1f} {bm25x_res['index_mem_delta']:>12.1f} {bm25s_res['index_mem_delta'] / bm25x_res['index_mem_delta']:>9.1f}x"
     )
     print(
-        f"{'Mmap load time (s)':<30} {bm25s_res['load_time']:>12.3f} {bm25rs_res['load_time']:>12.3f} {'N/A':>10}"
+        f"{'Mmap load time (s)':<30} {bm25s_res['load_time']:>12.3f} {bm25x_res['load_time']:>12.3f} {'N/A':>10}"
     )
     print(
-        f"{'Search time (s)':<30} {bm25s_res['search_time']:>12.3f} {bm25rs_res['search_time']:>12.3f} {bm25s_res['search_time'] / bm25rs_res['search_time']:>9.1f}x"
+        f"{'Search time (s)':<30} {bm25s_res['search_time']:>12.3f} {bm25x_res['search_time']:>12.3f} {bm25s_res['search_time'] / bm25x_res['search_time']:>9.1f}x"
     )
     print(
-        f"{'Avg query (ms)':<30} {bm25s_res['search_time'] / len(queries) * 1000:>12.3f} {bm25rs_res['search_time'] / len(queries) * 1000:>12.3f} {bm25s_res['search_time'] / bm25rs_res['search_time']:>9.1f}x"
+        f"{'Avg query (ms)':<30} {bm25s_res['search_time'] / len(queries) * 1000:>12.3f} {bm25x_res['search_time'] / len(queries) * 1000:>12.3f} {bm25s_res['search_time'] / bm25x_res['search_time']:>9.1f}x"
     )
 
-    print(f"\n{'Streaming ops (bm25rs only)':<30}")
-    print(f"{'  Add 1 doc (ms)':<30} {'N/A':>12} {bm25rs_res['add_time_ms']:>12.3f}")
+    print(f"\n{'Streaming ops (bm25x only)':<30}")
+    print(f"{'  Add 1 doc (ms)':<30} {'N/A':>12} {bm25x_res['add_time_ms']:>12.3f}")
     print(
-        f"{'  Delete 3 docs (ms)':<30} {'N/A':>12} {bm25rs_res['delete_time_ms']:>12.3f}"
+        f"{'  Delete 3 docs (ms)':<30} {'N/A':>12} {bm25x_res['delete_time_ms']:>12.3f}"
     )
     print(
-        f"{'  Update 1 doc (ms)':<30} {'N/A':>12} {bm25rs_res['update_time_ms']:>12.3f}"
+        f"{'  Update 1 doc (ms)':<30} {'N/A':>12} {bm25x_res['update_time_ms']:>12.3f}"
     )
 
     print("\nSample results (query 0):")
@@ -157,7 +157,7 @@ def main():
         f"  bm25s:  {list(zip(bm25s_res['sample_ids'], [f'{s:.4f}' for s in bm25s_res['sample_scores']]))}"
     )
     print(
-        f"  bm25rs: {list(zip(bm25rs_res['sample_ids'], [f'{s:.4f}' for s in bm25rs_res['sample_scores']]))}"
+        f"  bm25x: {list(zip(bm25x_res['sample_ids'], [f'{s:.4f}' for s in bm25x_res['sample_scores']]))}"
     )
 
 

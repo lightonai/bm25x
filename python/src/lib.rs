@@ -1,7 +1,7 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use bm25rs_core::{Method, TokenizerMode};
+use bm25x_core::{Method, TokenizerMode};
 
 fn parse_method(method: &str) -> PyResult<Method> {
     match method.to_lowercase().as_str() {
@@ -33,7 +33,7 @@ fn io_err(e: std::io::Error) -> PyErr {
 
 #[pyclass(name = "BM25")]
 struct PyBM25 {
-    inner: bm25rs_core::BM25,
+    inner: bm25x_core::BM25,
 }
 
 #[pymethods]
@@ -57,9 +57,9 @@ impl PyBM25 {
         let tok = parse_tokenizer(tokenizer)?;
         let inner = match index {
             Some(path) => {
-                bm25rs_core::BM25::open(path, m, k1, b, delta, tok, use_stopwords).map_err(io_err)?
+                bm25x_core::BM25::open(path, m, k1, b, delta, tok, use_stopwords).map_err(io_err)?
             }
-            None => bm25rs_core::BM25::with_tokenizer(m, k1, b, delta, tok, use_stopwords),
+            None => bm25x_core::BM25::with_tokenizer(m, k1, b, delta, tok, use_stopwords),
         };
         Ok(PyBM25 { inner })
     }
@@ -100,7 +100,7 @@ impl PyBM25 {
     #[staticmethod]
     #[pyo3(signature = (index, mmap=false))]
     fn load(index: &str, mmap: bool) -> PyResult<Self> {
-        let inner = bm25rs_core::BM25::load(index, mmap).map_err(io_err)?;
+        let inner = bm25x_core::BM25::load(index, mmap).map_err(io_err)?;
         Ok(PyBM25 { inner })
     }
 
@@ -133,7 +133,7 @@ impl PyBM25 {
 }
 
 #[pymodule]
-fn bm25rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn bm25x(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBM25>()?;
     Ok(())
 }

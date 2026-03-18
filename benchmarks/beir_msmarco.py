@@ -1,5 +1,5 @@
 """
-BEIR MS MARCO evaluation: bm25s vs bm25rs
+BEIR MS MARCO evaluation: bm25s vs bm25x
 Metrics: NDCG@10, memory usage (RSS), index time, d/s, q/s
 """
 
@@ -131,18 +131,18 @@ def run_bm25s(corpus_ids, corpus_texts, test_queries, qrels):
     }
 
 
-# ───────────────────────────── bm25rs ─────────────────────────────
+# ───────────────────────────── bm25x ─────────────────────────────
 
 
-def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
-    import bm25rs
+def run_bm25x(corpus_ids, corpus_texts, test_queries, qrels):
+    import bm25x
 
-    print("\n=== bm25rs ===")
+    print("\n=== bm25x ===")
     gc.collect()
     mem_before = get_memory_mb()
 
     t0 = time.perf_counter()
-    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25x.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     ids = index.add(corpus_texts)
     t_index = time.perf_counter() - t0
 
@@ -155,7 +155,7 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
     print(f"  Memory: {mem_after_index:.0f} MB  (delta: {mem_index_delta:.0f} MB)")
 
     # Save + reload mmap to measure mmap memory
-    index_dir = "/tmp/bm25rs_msmarco_index"
+    index_dir = "/tmp/bm25x_msmarco_index"
     if os.path.exists(index_dir):
         shutil.rmtree(index_dir)
     index.save(index_dir)
@@ -163,7 +163,7 @@ def run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels):
     gc.collect()
 
     mem_before_mmap = get_memory_mb()
-    index = bm25rs.BM25.load(index_dir, mmap=True)
+    index = bm25x.BM25.load(index_dir, mmap=True)
     mem_after_mmap = get_memory_mb()
     mem_mmap_delta = mem_after_mmap - mem_before_mmap
     print(f"  Mmap memory: {mem_after_mmap:.0f} MB  (delta: {mem_mmap_delta:.0f} MB)")
@@ -212,29 +212,29 @@ def main():
     corpus_ids, corpus_texts, test_queries, qrels = load_msmarco()
 
     bm25s_res = run_bm25s(corpus_ids, corpus_texts, test_queries, qrels)
-    bm25rs_res = run_bm25rs(corpus_ids, corpus_texts, test_queries, qrels)
+    bm25x_res = run_bm25x(corpus_ids, corpus_texts, test_queries, qrels)
 
     print("\n" + "=" * 65)
     print("BEIR MS MARCO Benchmark")
     print("=" * 65)
-    header = f"{'Metric':<25} {'bm25s':>15} {'bm25rs':>15}"
+    header = f"{'Metric':<25} {'bm25s':>15} {'bm25x':>15}"
     print(header)
     print("-" * 65)
-    print(f"{'NDCG@10':<25} {bm25s_res['ndcg10']:>15.4f} {bm25rs_res['ndcg10']:>15.4f}")
+    print(f"{'NDCG@10':<25} {bm25s_res['ndcg10']:>15.4f} {bm25x_res['ndcg10']:>15.4f}")
     print(
-        f"{'Index time (s)':<25} {bm25s_res['index_time']:>15.1f} {bm25rs_res['index_time']:>15.1f}"
+        f"{'Index time (s)':<25} {bm25s_res['index_time']:>15.1f} {bm25x_res['index_time']:>15.1f}"
     )
     print(
-        f"{'Index (d/s)':<25} {bm25s_res['docs_per_sec']:>15,.0f} {bm25rs_res['docs_per_sec']:>15,.0f}"
+        f"{'Index (d/s)':<25} {bm25s_res['docs_per_sec']:>15,.0f} {bm25x_res['docs_per_sec']:>15,.0f}"
     )
     print(
-        f"{'Search (q/s)':<25} {bm25s_res['queries_per_sec']:>15,.0f} {bm25rs_res['queries_per_sec']:>15,.0f}"
+        f"{'Search (q/s)':<25} {bm25s_res['queries_per_sec']:>15,.0f} {bm25x_res['queries_per_sec']:>15,.0f}"
     )
     print(
-        f"{'Index mem delta (MB)':<25} {bm25s_res['index_mem_mb']:>15.0f} {bm25rs_res['index_mem_mb']:>15.0f}"
+        f"{'Index mem delta (MB)':<25} {bm25s_res['index_mem_mb']:>15.0f} {bm25x_res['index_mem_mb']:>15.0f}"
     )
     print(
-        f"{'Mmap mem delta (MB)':<25} {bm25s_res['mmap_mem_mb']:>15.0f} {bm25rs_res['mmap_mem_mb']:>15.0f}"
+        f"{'Mmap mem delta (MB)':<25} {bm25s_res['mmap_mem_mb']:>15.0f} {bm25x_res['mmap_mem_mb']:>15.0f}"
     )
     print("=" * 65)
 
@@ -244,14 +244,14 @@ def main():
         md = [
             "## BEIR MS MARCO Benchmark",
             "",
-            "| Metric | bm25s | bm25rs |",
+            "| Metric | bm25s | bm25x |",
             "|--------|------:|-------:|",
-            f"| NDCG@10 | {bm25s_res['ndcg10']:.4f} | {bm25rs_res['ndcg10']:.4f} |",
-            f"| Index time (s) | {bm25s_res['index_time']:.1f} | {bm25rs_res['index_time']:.1f} |",
-            f"| Index (d/s) | {bm25s_res['docs_per_sec']:,.0f} | {bm25rs_res['docs_per_sec']:,.0f} |",
-            f"| Search (q/s) | {bm25s_res['queries_per_sec']:,.0f} | {bm25rs_res['queries_per_sec']:,.0f} |",
-            f"| Index mem (MB) | {bm25s_res['index_mem_mb']:.0f} | {bm25rs_res['index_mem_mb']:.0f} |",
-            f"| Mmap mem (MB) | {bm25s_res['mmap_mem_mb']:.0f} | {bm25rs_res['mmap_mem_mb']:.0f} |",
+            f"| NDCG@10 | {bm25s_res['ndcg10']:.4f} | {bm25x_res['ndcg10']:.4f} |",
+            f"| Index time (s) | {bm25s_res['index_time']:.1f} | {bm25x_res['index_time']:.1f} |",
+            f"| Index (d/s) | {bm25s_res['docs_per_sec']:,.0f} | {bm25x_res['docs_per_sec']:,.0f} |",
+            f"| Search (q/s) | {bm25s_res['queries_per_sec']:,.0f} | {bm25x_res['queries_per_sec']:,.0f} |",
+            f"| Index mem (MB) | {bm25s_res['index_mem_mb']:.0f} | {bm25x_res['index_mem_mb']:.0f} |",
+            f"| Mmap mem (MB) | {bm25s_res['mmap_mem_mb']:.0f} | {bm25x_res['mmap_mem_mb']:.0f} |",
         ]
         with open(summary_path, "a") as f:
             f.write("\n".join(md) + "\n")

@@ -1,14 +1,14 @@
 [workspace]
 
 [package]
-name = "bm25rs-python"
+name = "bm25x-python"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "bm25rs"
+name = "bm25x"
 crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.24", features = ["extension-module"] }
-bm25rs-core = { path = "..", package = "bm25rs" }
+bm25x-core = { path = "..", package = "bm25x" }

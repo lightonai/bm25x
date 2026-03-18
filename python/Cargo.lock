@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "bm25rs"
+name = "bm25x"
 version = "0.1.0"
 dependencies = [
  "bincode",
@@ -29,10 +29,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "bm25rs-python"
+name = "bm25x-python"
 version = "0.1.0"
 dependencies = [
- "bm25rs",
+ "bm25x",
  "pyo3",
 ]
 

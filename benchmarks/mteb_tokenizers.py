@@ -1,5 +1,5 @@
 """
-Benchmark all bm25rs tokenizer modes on MTEB retrieval tasks.
+Benchmark all bm25x tokenizer modes on MTEB retrieval tasks.
 Evaluates: plain, unicode, stem, unicode_stem
 Datasets: SciFact, NFCorpus, FiQA (small/fast MTEB retrieval tasks)
 Metric: NDCG@10
@@ -11,9 +11,8 @@ from collections import defaultdict
 import ir_measures
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
+from bm25x import BM25
 from ir_measures import nDCG
-
-from bm25rs import BM25
 
 DATASETS = {
     "scifact": {

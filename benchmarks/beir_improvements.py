@@ -10,9 +10,8 @@ from collections import defaultdict
 import ir_measures
 from beir import util
 from beir.datasets.data_loader import GenericDataLoader
+from bm25x import BM25
 from ir_measures import nDCG
-
-from bm25rs import BM25
 
 DATASETS = {
     "scifact": {

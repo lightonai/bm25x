@@ -1,13 +1,12 @@
-"""Benchmark bm25rs (Rust, mmap mode)."""
+"""Benchmark bm25x (Rust, mmap mode)."""
 
 import json
 import os
 import shutil
 import time
 
+import bm25x
 import psutil
-
-import bm25rs
 
 
 def get_memory_mb():
@@ -29,18 +28,18 @@ def main():
     mem_before = get_memory_mb()
     t0 = time.perf_counter()
 
-    index = bm25rs.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
+    index = bm25x.BM25(method="lucene", k1=1.5, b=0.75, use_stopwords=True)
     index.add(corpus)
 
     t_index = time.perf_counter() - t0
     mem_after_index = get_memory_mb()
-    print(f"[bm25rs] Index time: {t_index:.3f}s")
+    print(f"[bm25x] Index time: {t_index:.3f}s")
     print(
-        f"[bm25rs] Memory after indexing: {mem_after_index:.1f} MB (delta: {mem_after_index - mem_before:.1f} MB)"
+        f"[bm25x] Memory after indexing: {mem_after_index:.1f} MB (delta: {mem_after_index - mem_before:.1f} MB)"
     )
 
     # Save and reload with mmap
-    index_dir = "/tmp/bm25rs_bench_index"
+    index_dir = "/tmp/bm25x_bench_index"
     if os.path.exists(index_dir):
         shutil.rmtree(index_dir)
     index.save(index_dir)
@@ -52,12 +51,12 @@ def main():
 
     mem_before_mmap = get_memory_mb()
     t0 = time.perf_counter()
-    index = bm25rs.BM25.load(index_dir, mmap=True)
+    index = bm25x.BM25.load(index_dir, mmap=True)
     t_load = time.perf_counter() - t0
     mem_after_mmap = get_memory_mb()
-    print(f"[bm25rs] Mmap load time: {t_load:.3f}s")
+    print(f"[bm25x] Mmap load time: {t_load:.3f}s")
     print(
-        f"[bm25rs] Memory after mmap load: {mem_after_mmap:.1f} MB (delta: {mem_after_mmap - mem_before_mmap:.1f} MB)"
+        f"[bm25x] Memory after mmap load: {mem_after_mmap:.1f} MB (delta: {mem_after_mmap - mem_before_mmap:.1f} MB)"
     )
     print()
 
@@ -73,9 +72,9 @@ def main():
     t_search = time.perf_counter() - t0
     mem_after_search = get_memory_mb()
 
-    print(f"[bm25rs] Search time ({len(queries)} queries, k=10): {t_search:.3f}s")
-    print(f"[bm25rs] Avg query time: {t_search / len(queries) * 1000:.3f}ms")
-    print(f"[bm25rs] Memory after search: {mem_after_search:.1f} MB")
+    print(f"[bm25x] Search time ({len(queries)} queries, k=10): {t_search:.3f}s")
+    print(f"[bm25x] Avg query time: {t_search / len(queries) * 1000:.3f}ms")
+    print(f"[bm25x] Memory after search: {mem_after_search:.1f} MB")
     print()
 
     # Print sample results for comparison
@@ -90,22 +89,22 @@ def main():
     new_ids = index.add(["this is a brand new document added incrementally"])
     t_add = time.perf_counter() - t0
     print(
-        f"[bm25rs] Add 1 doc to existing index: {t_add * 1000:.3f}ms (new id: {new_ids})"
+        f"[bm25x] Add 1 doc to existing index: {t_add * 1000:.3f}ms (new id: {new_ids})"
     )
-    print(f"[bm25rs] Index size after add: {len(index)}")
+    print(f"[bm25x] Index size after add: {len(index)}")
 
     # --- Test delete ---
     t0 = time.perf_counter()
     index.delete([0, 1, 2])
     t_del = time.perf_counter() - t0
-    print(f"[bm25rs] Delete 3 docs: {t_del * 1000:.3f}ms")
-    print(f"[bm25rs] Index size after delete: {len(index)}")
+    print(f"[bm25x] Delete 3 docs: {t_del * 1000:.3f}ms")
+    print(f"[bm25x] Index size after delete: {len(index)}")
 
     # --- Test update ---
     t0 = time.perf_counter()
     index.update(3, "updated text for document three")
     t_upd = time.perf_counter() - t0
-    print(f"[bm25rs] Update 1 doc: {t_upd * 1000:.3f}ms")
+    print(f"[bm25x] Update 1 doc: {t_upd * 1000:.3f}ms")
 
 
 if __name__ == "__main__":
