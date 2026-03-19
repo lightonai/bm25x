@@ -294,13 +294,8 @@ pub fn get_global_context() -> Option<Arc<CudaIndexer>> {
             *guard = Some(Arc::clone(&arc));
             Some(arc)
         }
-        Ok(Err(e)) => {
-            eprintln!("[bm25x] CUDA init failed: {}, using CPU", e);
-            CUDA_BROKEN.store(true, Ordering::Relaxed);
-            None
-        }
-        Err(_) => {
-            eprintln!("[bm25x] CUDA init panicked (driver incompatible?), using CPU");
+        Ok(Err(_)) | Err(_) => {
+            // Silent fallback to CPU. When cuda=True, the caller raises an error.
             CUDA_BROKEN.store(true, Ordering::Relaxed);
             None
         }
