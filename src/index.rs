@@ -83,18 +83,34 @@ pub struct BM25 {
 
     // Auto-save path (if set, mutations persist to disk automatically)
     index_path: Option<PathBuf>,
+
+    // If true, CUDA is required — operations fail instead of falling back to CPU.
+    cuda_required: bool,
 }
 
 impl BM25 {
+    /// Require CUDA: if set, operations will fail instead of falling back to CPU.
+    /// Call after construction: `BM25::default().require_cuda()`
+    pub fn require_cuda(mut self) -> Self {
+        self.cuda_required = true;
+        self
+    }
+
+    /// Returns true if this index requires CUDA.
+    pub fn is_cuda_required(&self) -> bool {
+        self.cuda_required
+    }
+
     /// Create a new empty index.
     pub fn new(method: Method, k1: f32, b: f32, delta: f32, use_stopwords: bool) -> Self {
-        Self::with_tokenizer(
+        Self::with_options(
             method,
             k1,
             b,
             delta,
             TokenizerMode::UnicodeStem,
             use_stopwords,
+            false,
         )
     }
 
@@ -106,6 +122,21 @@ impl BM25 {
         delta: f32,
         tokenizer_mode: TokenizerMode,
         use_stopwords: bool,
+    ) -> Self {
+        Self::with_options(method, k1, b, delta, tokenizer_mode, use_stopwords, false)
+    }
+
+    /// Create a new empty index with all options including CUDA.
+    ///
+    /// If `cuda` is true, operations will return errors instead of falling back to CPU.
+    pub fn with_options(
+        method: Method,
+        k1: f32,
+        b: f32,
+        delta: f32,
+        tokenizer_mode: TokenizerMode,
+        use_stopwords: bool,
+        cuda: bool,
     ) -> Self {
         BM25 {
             k1,
@@ -121,6 +152,7 @@ impl BM25 {
             tokenizer: Tokenizer::with_mode(tokenizer_mode, use_stopwords),
             mmap_data: None,
             index_path: None,
+            cuda_required: cuda,
         }
     }
 
@@ -129,6 +161,7 @@ impl BM25 {
     /// - If the directory already contains a saved index, it is loaded (mmap).
     /// - Every mutation (`add`, `delete`, `update`) auto-saves to disk.
     /// - If the directory doesn't exist yet, a new empty index is created.
+    /// - If `cuda` is true, operations will return errors instead of falling back to CPU.
     pub fn open<P: AsRef<Path>>(
         path: P,
         method: Method,
@@ -138,14 +171,39 @@ impl BM25 {
         tokenizer_mode: TokenizerMode,
         use_stopwords: bool,
     ) -> io::Result<Self> {
+        Self::open_with_cuda(
+            path,
+            method,
+            k1,
+            b,
+            delta,
+            tokenizer_mode,
+            use_stopwords,
+            false,
+        )
+    }
+
+    /// Open a persistent index with explicit CUDA control.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_with_cuda<P: AsRef<Path>>(
+        path: P,
+        method: Method,
+        k1: f32,
+        b: f32,
+        delta: f32,
+        tokenizer_mode: TokenizerMode,
+        use_stopwords: bool,
+        cuda: bool,
+    ) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         if path.join("header.bin").exists() {
             let mut index = Self::load(&path, true)?;
             index.index_path = Some(path);
+            index.cuda_required = cuda;
             Ok(index)
         } else {
             let mut index =
-                Self::with_tokenizer(method, k1, b, delta, tokenizer_mode, use_stopwords);
+                Self::with_options(method, k1, b, delta, tokenizer_mode, use_stopwords, cuda);
             index.index_path = Some(path);
             Ok(index)
         }
@@ -182,10 +240,24 @@ impl BM25 {
                 ) {
                     Ok(result) => return self.apply_cuda_result(documents.len(), result),
                     Err(e) => {
+                        if self.cuda_required {
+                            return Err(io::Error::other(format!(
+                                "cuda=true but CUDA indexing failed: {}",
+                                e
+                            )));
+                        }
                         eprintln!("[bm25x] CUDA indexing failed: {}, falling back to CPU", e);
                     }
                 }
+            } else if self.cuda_required {
+                return Err(io::Error::other("cuda=true but no CUDA GPU is available"));
             }
+        }
+        #[cfg(not(feature = "cuda"))]
+        if self.cuda_required {
+            return Err(io::Error::other(
+                "cuda=true but bm25x was not compiled with CUDA support",
+            ));
         }
 
         self.add_cpu(documents)
@@ -341,6 +413,151 @@ impl BM25 {
         }
 
         Self::topk_from_scores(&scores, &touched, k)
+    }
+
+    /// Batch search: run multiple queries in parallel using rayon.
+    /// Returns one result list per query. Much faster than sequential search()
+    /// because it amortizes score array allocation and enables CPU parallelism.
+    pub fn search_batch(&self, queries: &[&str], k: usize) -> Vec<Vec<SearchResult>> {
+        if self.num_docs == 0 {
+            return queries.iter().map(|_| Vec::new()).collect();
+        }
+
+        let pool = capped_pool();
+        pool.install(|| {
+            queries
+                .par_iter()
+                .map(|query| self.search(query, k))
+                .collect()
+        })
+    }
+
+    /// Batch filtered search: run multiple queries with per-query subsets in parallel.
+    pub fn search_filtered_batch(
+        &self,
+        queries: &[&str],
+        k: usize,
+        subsets: &[&[usize]],
+    ) -> Vec<Vec<SearchResult>> {
+        if self.num_docs == 0 {
+            return queries.iter().map(|_| Vec::new()).collect();
+        }
+
+        let pool = capped_pool();
+        pool.install(|| {
+            queries
+                .par_iter()
+                .zip(subsets.par_iter())
+                .map(|(query, subset)| self.search_filtered(query, k, subset))
+                .collect()
+        })
+    }
+
+    /// Batch GPU search: process multiple queries across multiple GPUs.
+    /// If a MultiGpuSearchIndex is provided, queries are distributed across GPUs.
+    /// Otherwise falls back to single-GPU sequential processing.
+    #[cfg(feature = "cuda")]
+    pub fn search_gpu_batch(
+        &self,
+        gpu_index: &mut crate::cuda::GpuSearchIndex,
+        queries: &[&str],
+        k: usize,
+    ) -> Vec<Vec<SearchResult>> {
+        let ctx = match crate::cuda::get_global_context() {
+            Some(c) => c,
+            None => return self.search_batch(queries, k),
+        };
+
+        let params = ScoringParams {
+            k1: self.k1,
+            b: self.b,
+            delta: self.delta,
+            avgdl: self.total_tokens as f32 / self.num_docs as f32,
+        };
+
+        let all_query_terms = self.tokenize_queries(queries);
+
+        let mut results = Vec::with_capacity(queries.len());
+        for query_terms in &all_query_terms {
+            match gpu_index.search(&ctx, query_terms, params.k1, params.b, params.avgdl, k) {
+                Ok(r) => results.push(
+                    r.into_iter()
+                        .map(|(doc_id, score)| SearchResult {
+                            index: doc_id as usize,
+                            score,
+                        })
+                        .collect(),
+                ),
+                Err(e) => {
+                    eprintln!("[bm25x] GPU batch search failed: {}", e);
+                    results.push(Vec::new());
+                }
+            }
+        }
+        results
+    }
+
+    /// Batch GPU search across multiple GPUs. Queries distributed evenly.
+    #[cfg(feature = "cuda")]
+    pub fn search_multi_gpu_batch(
+        &self,
+        multi_gpu: &mut crate::multi_gpu::MultiGpuSearchIndex,
+        queries: &[&str],
+        k: usize,
+    ) -> Vec<Vec<SearchResult>> {
+        let params = ScoringParams {
+            k1: self.k1,
+            b: self.b,
+            delta: self.delta,
+            avgdl: self.total_tokens as f32 / self.num_docs as f32,
+        };
+
+        let all_query_terms = self.tokenize_queries(queries);
+
+        let raw_results =
+            multi_gpu.search_batch(&all_query_terms, params.k1, params.b, params.avgdl, k);
+
+        raw_results
+            .into_iter()
+            .map(|r| {
+                r.into_iter()
+                    .map(|(doc_id, score)| SearchResult {
+                        index: doc_id as usize,
+                        score,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Helper: tokenize + resolve term IDs for a batch of queries (parallel on CPU).
+    #[cfg(feature = "cuda")]
+    fn tokenize_queries(&self, queries: &[&str]) -> Vec<Vec<(u32, f32)>> {
+        let pool = capped_pool();
+        pool.install(|| {
+            queries
+                .par_iter()
+                .map(|query| {
+                    let query_tokens = self.tokenizer.tokenize_owned(query);
+                    let mut seen = std::collections::HashSet::new();
+                    let mut terms = Vec::new();
+                    for token in &query_tokens {
+                        if let Some(&term_id) = self.vocab.get(token.as_str()) {
+                            if seen.insert(term_id) {
+                                let df = self.doc_freqs.get(term_id as usize).copied().unwrap_or(0);
+                                if df > 0 {
+                                    terms.push((
+                                        term_id,
+                                        scoring::idf(self.method, self.num_docs, df),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    terms
+                })
+                .collect()
+        })
     }
 
     /// Search restricted to a subset of document IDs (pre-filtering).
@@ -778,6 +995,32 @@ impl BM25 {
         self.total_tokens = total_tokens;
         self.num_docs = num_docs;
         self.mmap_data = Some(mmap_data);
+    }
+
+    /// Create a multi-GPU search index. Replicates the index across all available GPUs.
+    #[cfg(feature = "cuda")]
+    pub fn to_multi_gpu_search_index(
+        &self,
+    ) -> Result<crate::multi_gpu::MultiGpuSearchIndex, String> {
+        let postings_ref: Vec<Vec<(u32, u32)>>;
+        let postings = if let Some(ref mmap) = self.mmap_data {
+            postings_ref = (0..self.vocab.len() as u32)
+                .map(|t| {
+                    let mut entries = Vec::new();
+                    mmap.for_each_posting(t, &mut |doc_id, tf| entries.push((doc_id, tf)));
+                    entries
+                })
+                .collect();
+            &postings_ref
+        } else {
+            &self.postings
+        };
+        let doc_lengths = if let Some(ref mmap) = self.mmap_data {
+            mmap.all_doc_lengths()
+        } else {
+            self.doc_lengths.clone()
+        };
+        crate::multi_gpu::MultiGpuSearchIndex::from_index(postings, &doc_lengths, self.num_docs)
     }
 
     /// Create a GPU search index for fast search. Call once after indexing.

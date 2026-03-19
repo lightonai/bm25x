@@ -20,7 +20,7 @@ use rayon::prelude::*;
 // CUDA kernel source
 // ---------------------------------------------------------------------------
 
-const CUDA_KERNELS: &str = r#"
+pub const CUDA_KERNELS: &str = r#"
 extern "C" __global__ void compute_histogram(
     const unsigned int* __restrict__ term_ids,
     unsigned int* __restrict__ histogram,
@@ -281,14 +281,26 @@ pub fn get_global_context() -> Option<Arc<CudaIndexer>> {
     if let Some(ref ctx) = *guard {
         return Some(Arc::clone(ctx));
     }
-    match CudaIndexer::new(0) {
-        Ok(ctx) => {
+    // catch_unwind: cudarc may panic if CUDA driver is missing, too old,
+    // or has incompatible symbols. This ensures we gracefully fall back to CPU.
+    // Suppress panic output for clean fallback.
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let init_result = std::panic::catch_unwind(|| CudaIndexer::new(0));
+    std::panic::set_hook(prev_hook);
+    match init_result {
+        Ok(Ok(ctx)) => {
             let arc = Arc::new(ctx);
             *guard = Some(Arc::clone(&arc));
             Some(arc)
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             eprintln!("[bm25x] CUDA init failed: {}, using CPU", e);
+            CUDA_BROKEN.store(true, Ordering::Relaxed);
+            None
+        }
+        Err(_) => {
+            eprintln!("[bm25x] CUDA init panicked (driver incompatible?), using CPU");
             CUDA_BROKEN.store(true, Ordering::Relaxed);
             None
         }

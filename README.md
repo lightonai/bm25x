@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="bm25x" width="400" />
+  <img src="assets/logo.svg" alt="bm25x" width="600" />
 </p>
 
 <p align="center">
   <a href="https://crates.io/crates/bm25x"><img src="https://img.shields.io/crates/v/bm25x?style=flat-square&color=4facfe" alt="crates.io" /></a>
   <a href="https://pypi.org/project/bm25x/"><img src="https://img.shields.io/pypi/v/bm25x?style=flat-square&color=4facfe" alt="PyPI" /></a>
-  <a href="https://github.com/lightonai/bm25x/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-white?style=flat-square" alt="License" /></a>
+  <a href="https://github.com/lightonai/bm25x/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache_2.0-white?style=flat-square" alt="License" /></a>
 </p>
 
 BM25 search engine in Rust with Python bindings. All 5 BM25 variants, streaming add/delete/update, pre-filtered search (up to 600x faster), mmap indices, and auto-persistence.
@@ -37,6 +37,19 @@ for doc_id, score in results:
 # Pre-filtered search — only score a subset of documents
 results = index.search("quick fox", k=10, subset=[0, 2])
 
+# Batch search — multiple queries at once (2.6x faster on CPU, uses rayon parallelism)
+results = index.search(["quick fox", "lazy dog"], k=10)
+# results = [[(doc_id, score), ...], [(doc_id, score), ...]]
+
+# Batch search with per-query subsets
+results = index.search(["quick fox", "lazy dog"], k=10, subset=[[0, 2], [1]])
+
+# GPU-accelerated search (faster on large indices)
+index = BM25(cuda=True)  # raises error if GPU unavailable
+index.add(["the quick brown fox", "lazy dog on a mat", "fox and hound"])
+results = index.search("fox", k=10)                      # auto-uploads to GPU on first call
+results = index.search(["quick fox", "lazy dog"], k=10)   # batch across multiple GPUs
+
 # Streaming mutations (auto-saved to disk)
 index.add(["a brand new document"])
 index.delete([1])
@@ -63,6 +76,7 @@ BM25(
     b=0.75,              # Document length normalization
     delta=0.5,           # Delta (BM25L/BM25+ only)
     use_stopwords=True,  # Remove English stopwords
+    cuda=False,          # If True, require CUDA — raises error if GPU unavailable
 )
 ```
 
@@ -103,6 +117,15 @@ for r in &results {
 
 // Pre-filtered search — only score documents in the subset
 let results = index.search_filtered("quick fox", 10, &[0, 2]);
+
+// Batch search — parallel across CPU cores
+let results = index.search_batch(&["quick fox", "lazy dog"], 10);
+
+// GPU-accelerated search — use cuda=true to require CUDA (returns Err if unavailable)
+let mut gpu_index = BM25::with_options(
+    Method::Lucene, 1.5, 0.75, 0.5, TokenizerMode::UnicodeStem, true, true  // cuda=true
+);
+// Or: BM25::default().require_cuda()
 
 // Streaming mutations (auto-saved to disk)
 index.add(&["a brand new document"]);
@@ -157,7 +180,7 @@ fn is_empty(&self) -> bool
   <img src="assets/benchmarks.png" alt="bm25x benchmarks" width="100%" />
 </p>
 
-> [BEIR](https://github.com/beir-cellar/beir) datasets (log scale). Same or better NDCG@10 than bm25s. CPU: **3.5-6x faster** indexing, **1-4x faster** search. GPU (H100): up to **13x faster** indexing, **214x faster** search on MS MARCO 8.8M docs. GPU search has per-query kernel launch overhead, making it best suited for **batch querying** on **large datasets**.
+> [BEIR](https://github.com/beir-cellar/beir) datasets (log scale). Same or better NDCG@10 than bm25s. CPU: **3.5-6x faster** indexing, **up to 6x faster** batch search. GPU (4× H100): up to **13x faster** indexing, **815x faster** batch search on MS MARCO 8.8M docs. GPU search has per-query kernel launch overhead, best suited for **batch querying** on **large datasets**. Multi-GPU auto-scales with available devices.
 
 ---
 
@@ -175,10 +198,21 @@ On disk, the index is a flat binary format with mmap'd postings and doc lengths.
 
 ---
 
+## Citation
+
+```bibtex
+@software{bm25x,
+  title  = {bm25x: Fast BM25 search engine in Rust with GPU acceleration},
+  url    = {https://github.com/lightonai/bm25x},
+  author = {Sourty, Rapha\"{e}l},
+  year   = {2026},
+}
+```
+
 ## Acknowledgements
 
 Started from [bm25s](https://github.com/xhluca/bm25s), rebuilt for incremental indexing -- add, delete, and update without rebuilding the whole index.
 
 ## License
 
-MIT
+Apache-2.0

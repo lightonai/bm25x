@@ -14,5 +14,5 @@ pyo3 = { version = "0.24", features = ["extension-module"] }
 bm25x-core = { path = "..", package = "bm25x" }
 
 [features]
-default = []
+default = ["cuda"]
 cuda = ["bm25x-core/cuda"]

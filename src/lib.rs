@@ -5,6 +5,8 @@ pub mod tokenizer;
 
 #[cfg(feature = "cuda")]
 pub mod cuda;
+#[cfg(feature = "cuda")]
+pub mod multi_gpu;
 
 pub use index::{SearchResult, BM25};
 pub use scoring::{Method, ScoringParams};
