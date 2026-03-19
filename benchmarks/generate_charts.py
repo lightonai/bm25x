@@ -157,38 +157,28 @@ fig.subplots_adjust(hspace=0.35, left=0.08, right=0.95, top=0.96, bottom=0.04)
 grouped_bar(
     ax_index,
     datasets,
-    [("bm25s", baseline), ("bm25x", idx_su_x), ("bm25x GPU", idx_su_gpu)],
-    "speedup vs bm25s (log)",
-    "Indexing Speedup",
-    fmt="{:.1f}x",
+    [("bm25s", index_tput_bm25s), ("bm25x", index_tput_bm25x), ("bm25x GPU", index_tput_bm25x_gpu)],
+    "throughput — docs/s (log)",
+    "Indexing Speed (d/s)",
+    fmt="{:,.0f}",
     log_scale=True,
-    abs_values=[index_tput_bm25s, index_tput_bm25x, index_tput_bm25x_gpu],
-    abs_unit="d/s",
 )
 
-# Search speedup (top right)
+# Search throughput
 grouped_bar(
     ax_search,
     datasets,
     [
-        ("bm25s", baseline),
-        ("bm25x", s_su_x),
-        ("bm25x batch", s_su_batch),
-        ("bm25x GPU", s_su_gpu),
-        ("4xGPU batch", s_su_4gpu),
+        ("bm25s", search_bm25s),
+        ("bm25x", search_bm25x),
+        ("bm25x batch", search_bm25x_batch),
+        ("bm25x GPU", search_bm25x_gpu),
+        ("4xGPU batch", search_bm25x_4gpu),
     ],
-    "speedup vs bm25s (log)",
-    "Search Speedup",
-    fmt="{:.0f}x",
+    "throughput — queries/s (log)",
+    "Search Speed (q/s)",
+    fmt="{:,.0f}",
     log_scale=True,
-    abs_values=[
-        search_bm25s,
-        search_bm25x,
-        search_bm25x_batch,
-        search_bm25x_gpu,
-        search_bm25x_4gpu,
-    ],
-    abs_unit="q/s",
 )
 
 # Retrieval quality (bottom, full width)
